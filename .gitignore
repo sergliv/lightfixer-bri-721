@@ -1,0 +1,11 @@
+*.pdb
+*.log
+settings.json
+settings.json.*
+
+# build artefacts: the executable lives in Releases, not in the repository
+*.exe
+release/
+
+# черновики и файлы для публикации на форуме
+4pda/
