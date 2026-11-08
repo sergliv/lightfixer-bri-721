@@ -38,13 +38,19 @@ backlight level right after the laptop is powered on.
 2. Run it as administrator (the program asks for elevation itself).
 3. Set your options and press **Save**.
 
-Autostart is configured automatically: on first run the program creates a Task
-Scheduler entry with administrator rights that starts it silently in the tray
-15 seconds after sign-in. There are no further prompts.
+On first run the program creates a Task Scheduler entry with administrator rights
+that starts it silently in the tray 15 seconds after sign-in. There are no further
+prompts.
 
-To disable autostart, use Task Scheduler: the task is named **LightFixer BRI-721**
-(right side — "Disable"), or run
-`schtasks /Change /TN "LightFixer BRI-721" /DISABLE`.
+Autostart is controlled by the tick "Start the program with Windows" in the
+"Keyboard backlight when the laptop starts" card: clear it, press **Save**, and the
+scheduled task is switched off; tick it again and the task is switched back on.
+The second tick, "Light up before sign-in (at the password screen)", controls a
+separate task: when cleared, that task is removed from Task Scheduler.
+
+The tasks are named **LightFixer BRI-721** and **LightFixer BRI-721 (загрузка)**.
+They are visible in Task Scheduler (Win+R → `taskschd.msc`), but there is no need
+to touch them there: the program keeps them in line with the ticks itself.
 
 Settings are stored in `settings.json` next to the executable, so that folder must be
 writable. The diagnostic log is at `%LOCALAPPDATA%\LightFixer\lightfixer.log` and can
