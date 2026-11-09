@@ -190,6 +190,13 @@ namespace LightFixer
         private static volatile bool hookFailed;
         private static HookProc keyProc;
 
+        // While nobody is at the keyboard the loop sleeps for a whole second instead of
+        // waking up eight times a second: every wake-up costs processor time, and on a
+        // laptop left standing overnight that is the only place the program spends
+        // anything at all. A key press sets this event, so the light still comes back
+        // the moment a key is touched - the first pass after it runs at once.
+        private static readonly ManualResetEvent wakeEvent = new ManualResetEvent(false);
+
         public static bool LightIsOn { get { return stateOn; } }
         public static int CurrentMode { get { return expected; } }
 
@@ -354,7 +361,11 @@ namespace LightFixer
                 keyProc = delegate(int nCode, IntPtr wParam, IntPtr lParam)
                 {
                     if (nCode >= 0 && (wParam == (IntPtr)0x100 || wParam == (IntPtr)0x104))
+                    {
                         lastKeyTick = unchecked((uint)Environment.TickCount);
+                        // cut a long sleep short: the light must come back at once
+                        try { wakeEvent.Set(); } catch { }
+                    }
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
                 };
                 IntPtr hk = SetWindowsHookEx(13, keyProc, IntPtr.Zero, 0);
@@ -702,14 +713,19 @@ namespace LightFixer
                 // 100 ms, not 200: Fn+Space passes through the firmware's "auto" state for a
                 // very short moment, and a slower look misses it - the light then stays in
                 // auto and the press appears not to work.
-                // While nobody is at the keyboard the pace is relaxed to 500 ms: the only
-                // question then is "is the pause over", and half a second is plenty.
-                // The first key or mouse move brings the fast pace back at once.
+                // While nobody is at the keyboard the pace drops to one look a second: the
+                // only question then is "is the pause over", and a second is plenty. A key
+                // press wakes the loop immediately through wakeEvent, so the light comes
+                // back without waiting for the full second.
+                // With the mouse option on, the mouse moves are still noticed within that
+                // second - a mouse cannot wake a sleeping loop, only a key can.
                 int nap;
-                if (S.Control != "ours" || !S.Enabled) nap = 400;
-                else if (idleMs > 30000) nap = 500;
+                if (S.Control != "ours" || !S.Enabled) nap = 1000;
+                else if (idleMs > 30000) nap = 1000;
                 else nap = 100;
-                Thread.Sleep(nap);
+
+                bool woke = wakeEvent.WaitOne(nap, false);
+                if (woke) wakeEvent.Reset();
             }
         }
     }
@@ -1176,7 +1192,9 @@ namespace LightFixer
             tick = new System.Windows.Forms.Timer();
             tick.Interval = 2000;
             tick.Tick += delegate { UpdateUi(); };
-            tick.Start();
+            // the two-second tick is deliberately not started: UpdateUi only rewrites the
+            // tray hint with the same constant text, so a timer waking the window thread
+            // thirty times a minute was pure waste. The hint is set once below.
 
             UpdateUi();
         }

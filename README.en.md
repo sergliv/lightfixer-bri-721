@@ -156,9 +156,15 @@ administrator rights, and as SYSTEM at boot.
 
 **Battery.** While you work, the program asks the firmware for the current mode ten
 times a second: otherwise a press of Fn+Space would be missed (the firmware holds
-the "auto" step for about 50 ms). Measured on this model — **about 0.7 % of one
-core**, roughly 1–2 % of battery life. When the keyboard and the mouse are left
-alone for more than 30 seconds, polling stops and the drain drops to almost nothing.
+the "auto" step for about 50 ms). Measured on this model — **about 0.3–0.5 % of one
+core**.
+
+When the keyboard and the mouse are left alone for more than 30 seconds, the
+program asks the firmware once a second — enough to notice the end of a pause.
+Measured while idle: **about 0.03 % of one core** (16 ms per minute), which is
+roughly a tenth of a percent of the battery over ten hours of idling. Any key press
+wakes the program at once instead of waiting for the rest of that second, so the
+backlight comes back without delay.
 
 **Sleep.** The program does not block sleep (it never calls `SetThreadExecutionState`),
 creates no wake timers, and its scheduled task cannot wake the laptop. After waking
