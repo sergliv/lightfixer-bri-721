@@ -437,10 +437,17 @@ namespace LightFixer
 
         // Fn+Space must be noticed before the idle rule makes up its mind, otherwise the
         // press is taken for our own light and quietly put out again five seconds later.
-        private static void NoticeUserSwitch(DateTime now)
+        private static void NoticeUserSwitch(DateTime now, long idleMs)
         {
             if (S.Control != "ours") return;      // "Штатные настройки HONOR": hands off
             if (!S.Enabled) return;
+
+            // Nobody is at the keyboard: a press is impossible, so the firmware is not
+            // asked ten times a second for nothing. This is the one place where the
+            // program burned processor time while the laptop stood idle all day.
+            // The first key or mouse move drops the idle counter, and the very next
+            // pass (within 100 ms) asks the firmware again.
+            if (idleMs > 30000) return;
 
             int m = GetMode();
             if (m < 0) return;
@@ -500,6 +507,7 @@ namespace LightFixer
             DateTime lastMode = DateTime.MinValue;
             DateTime lastTimeout = DateTime.MinValue;
             bool fwRead = false;
+            long idleMs = 0;   // how long the user has been away, see the nap at the end
 
             while (true)
             {
@@ -651,11 +659,11 @@ namespace LightFixer
                         }
                     }
 
-                    NoticeUserSwitch(now);   // Fn+Space first, the idle rule after it
+                    idleMs = IdleMs();
+                    NoticeUserSwitch(now, idleMs);   // Fn+Space first, the idle rule after it
 
                     if (S.Control != "native")
                     {
-                        long idleMs = IdleMs();
                         bool shouldBeOn = true;
                         if (levelOff || userKilled) shouldBeOn = false;
                         else if (now < startupGrace) shouldBeOn = true;
@@ -694,7 +702,14 @@ namespace LightFixer
                 // 100 ms, not 200: Fn+Space passes through the firmware's "auto" state for a
                 // very short moment, and a slower look misses it - the light then stays in
                 // auto and the press appears not to work.
-                Thread.Sleep((S.Control == "ours" && S.Enabled) ? 100 : 400);
+                // While nobody is at the keyboard the pace is relaxed to 500 ms: the only
+                // question then is "is the pause over", and half a second is plenty.
+                // The first key or mouse move brings the fast pace back at once.
+                int nap;
+                if (S.Control != "ours" || !S.Enabled) nap = 400;
+                else if (idleMs > 30000) nap = 500;
+                else nap = 100;
+                Thread.Sleep(nap);
             }
         }
     }
@@ -1033,12 +1048,15 @@ namespace LightFixer
         // schtasks has no switch for these, so they are turned off right after creation.
         // Without this a task re-created by the program quietly stopped starting after a
         // reboot on battery power.
+        // The scheduler also puts a three-day limit on every task: after 72 hours of
+        // running it is stopped for good, and on a laptop that is never rebooted the
+        // tray copy simply disappears. The limit is removed for the same reason.
         private static void RelaxTask(string name)
         {
             try
             {
                 Run("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -Command \"Set-ScheduledTask -TaskName '" + name +
-                    "' -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable)\"");
+                    "' -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero))\"");
             }
             catch { }
         }

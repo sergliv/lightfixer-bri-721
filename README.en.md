@@ -1,12 +1,6 @@
 # LightFixer BRI-721
 
-[![Release](https://img.shields.io/github/v/release/sergliv/lightfixer-bri-721?label=release&color=4f46e5)](https://github.com/sergliv/lightfixer-bri-721/releases/latest)
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-4f46e5.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-4f46e5.svg)](#)
-
-Русская версия: [README.md](README.md)
-
-<img src="screenshot.png" alt="Program window" width="440">
+Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
 The program turns the keyboard backlight on while you are using the laptop (on key
 presses, and optionally on mouse movement) and turns it off after a configurable idle
@@ -133,6 +127,42 @@ The source code is original, written from scratch. The distribution contains no 
 files: no executables, no images, no text. The WMI command numbers were derived from
 the laptop's own ACPI tables and from public write-ups, not by decompiling anyone
 else's software.
+
+## Security and battery use
+
+**No network at all.** The executable contains no networking components
+(`System.Net`, `Socket`, `TcpClient`, `HttpWebRequest`, `WebClient`), and while it
+runs the program holds no network connection. The only addresses in the file are
+Microsoft namespace URLs from the manifest.
+
+**Registry and other processes.** The program does not touch the registry, does not
+load third-party libraries and does not inject code into other processes. Of the
+system libraries it uses only `user32.dll` (a standard Windows library) and a single
+WMI method of the firmware.
+
+**Keyboard.** To bring the light back after the idle pause the program installs a
+system keyboard hook (`SetWindowsHookEx`). The handler stores **only the time** of
+the last keypress: neither the key code nor any typed text is read or recorded
+anywhere.
+
+**Privileges.** The program runs as administrator — the ACPI method of the firmware
+is unavailable otherwise. The boot task runs as SYSTEM so that the light is already
+on while the Windows password is typed.
+
+**For installation.** Install the program into a folder only administrators can
+write to, for example `C:\Program Files\LightFixer\`. If it sits in a folder that is
+writable by everyone, replacing the executable gives code execution with
+administrator rights, and as SYSTEM at boot.
+
+**Battery.** While you work, the program asks the firmware for the current mode ten
+times a second: otherwise a press of Fn+Space would be missed (the firmware holds
+the "auto" step for about 50 ms). Measured on this model — **about 0.7 % of one
+core**, roughly 1–2 % of battery life. When the keyboard and the mouse are left
+alone for more than 30 seconds, polling stops and the drain drops to almost nothing.
+
+**Sleep.** The program does not block sleep (it never calls `SetThreadExecutionState`),
+creates no wake timers, and its scheduled task cannot wake the laptop. After waking
+up, the backlight is left alone for 20 seconds so the firmware can settle.
 
 ## On-screen popup (HONOR)
 
