@@ -204,7 +204,7 @@ foreach ($s in $sizes) {
 
     $frames += , @{ Size = $s; Data = $bytes }
     if ($s -eq 256 -or $s -eq 32 -or $s -eq 16) {
-        $out = Join-Path $env:CLAUDE_JOB_DIR 'tmp'
+        $out = Join-Path $env:TEMP 'lightfixer-icons'
         if (-not (Test-Path $out)) { New-Item -ItemType Directory -Path $out | Out-Null }
         $bmp.Save((Join-Path $out "icon-$s.png"), [System.Drawing.Imaging.ImageFormat]::Png)
     }

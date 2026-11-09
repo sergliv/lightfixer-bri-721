@@ -31,6 +31,13 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
+// the same number must stand in three places: here, in app.manifest and in the window;
+// bump them together
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyProduct("LightFixer BRI-721")]
+[assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
+
 namespace LightFixer
 {
     // ---------------------------------------------------------------- settings
@@ -1260,7 +1267,7 @@ namespace LightFixer
         }
         // ---------- form ----------
         // ---------- form ----------
-        // palette: taken from our own Shtampio project (ui/css/tokens.css)
+        // palette: the same quiet greys as in our other desktop tools
         private static readonly Color CAccent = Color.FromArgb(0x47, 0x52, 0xD6);
         private static readonly Color CAccentHover = Color.FromArgb(0x3B, 0x45, 0xC2);
         private static readonly Color CAccentPress = Color.FromArgb(0x31, 0x3A, 0xA8);
@@ -1278,7 +1285,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.0";
+            form.Text = "LightFixer BRI-721  v1.1";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1297,7 +1304,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.0";
+            title.Text = "LightFixer BRI-721   v1.1";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -1783,7 +1790,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.0";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.1";
         }
 
         // ---------- unsaved changes ----------
@@ -1895,7 +1902,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.0";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.1";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2048,7 +2055,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.0", "version 1.0");
+                pill.Text = L("версия 1.1", "version 1.1");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;
