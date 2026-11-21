@@ -1596,7 +1596,7 @@ namespace LightFixer
             // Caps Lock as the layout switch: the key is intercepted and never reaches
             // Windows, so the lock itself never turns on and its light stays dark.
             cbCaps = new CheckBox();
-            cbCaps.Text = L("Caps Lock переключает рус/англ", "Caps Lock switches RU/EN");
+            cbCaps.Text = L("Caps Lock переключает Ru/En", "Caps Lock switches Ru/En");
             cbCaps.SetBounds(16, 186, 388, 20);
             cardStartup.Controls.Add(cbCaps);
             tipStartup.SetToolTip(cbCaps,

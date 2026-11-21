@@ -1,9 +1,9 @@
-# LightFixer BRI-721  —  version 1.2
+﻿# LightFixer BRI-721  —  version 1.2
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
-**New in 1.2.** The **Caps Lock** key can switch the RU/EN keyboard layout — both
-skills now live in one application and one tray icon: tick “Caps Lock switches RU/EN”
+**New in 1.2.** The **Caps Lock** key can switch the Ru/En keyboard layout — both
+skills now live in one application and one tray icon: tick “Caps Lock switches Ru/En”
 in the window. Capital letters are not locked and the Caps Lock light stays off.
 Without the tick the key works as usual.
 
@@ -33,7 +33,7 @@ backlight level right after the laptop is powered on.
   commands at all and the laptop's own settings take over.
 - **Fn+Space** keeps working exactly as it does without the program: it cycles the
   backlight at any time, just like in the stock configuration.
-- The **Caps Lock** key can switch the RU/EN layout: capital letters are not locked
+- The **Caps Lock** key can switch the Ru/En layout: capital letters are not locked
   and the light stays off. Turned off by a tick in the window.
 - Lives in the notification area, starts with Windows, keeps its settings.
 
