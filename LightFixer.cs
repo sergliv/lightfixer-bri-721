@@ -33,8 +33,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -51,6 +51,7 @@ namespace LightFixer
         public string Control = "ours";     // "ours" | "native"
         public bool MouseWake = true;
         public bool BootLight = true;       // light at the password screen, before sign-in
+        public bool CapsSwitch = false;     // Caps Lock switches the keyboard layout, not the lock
         public string Lang = "";            // interface language: "ru" | "en"
         public int FwTimeout = 0;           // the laptop's own timeout, kept to restore it on exit
         public string Path;
@@ -77,6 +78,8 @@ namespace LightFixer
                     if (m.Success) MouseWake = m.Groups[1].Value == "true";
                     m = Regex.Match(t, "\"bootLight\"\\s*:\\s*(true|false)");
                     if (m.Success) BootLight = m.Groups[1].Value == "true";
+                    m = Regex.Match(t, "\"capsSwitch\"\\s*:\\s*(true|false)");
+                    if (m.Success) CapsSwitch = m.Groups[1].Value == "true";
                     m = Regex.Match(t, "\"startup\"\\s*:\\s*\"([^\"]+)\"");
                     if (m.Success) Startup = m.Groups[1].Value;
                     m = Regex.Match(t, "\"lastLevel\"\\s*:\\s*\"([^\"]+)\"");
@@ -111,6 +114,7 @@ namespace LightFixer
                         "    \"control\":  \"" + Control + "\",\n" +
                         "    \"mouseWake\":  " + (MouseWake ? "true" : "false") + ",\n" +
                         "    \"bootLight\":  " + (BootLight ? "true" : "false") + ",\n" +
+                        "    \"capsSwitch\":  " + (CapsSwitch ? "true" : "false") + ",\n" +
                         "    \"idleSeconds\":  " + IdleSeconds.ToString(CultureInfo.InvariantCulture) + ",\n" +
                         "    \"lang\":  \"" + Lang + "\",\n" +
                         "    \"fwTimeout\":  " + FwTimeout.ToString(CultureInfo.InvariantCulture) + "\n" +
@@ -147,6 +151,20 @@ namespace LightFixer
 
         private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        // ---- Caps Lock as the layout switch
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
+
+        private const int VkCapital = 0x14;
+        private const uint WmInputLangChangeRequest = 0x0050;
+
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+        [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint idThread);
+        [DllImport("user32.dll")] private static extern int GetKeyboardLayoutList(int nBuff, [Out] IntPtr[] lpList);
+        [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern IntPtr ActivateKeyboardLayout(IntPtr hkl, uint flags);
         [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] private static extern bool GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
         [DllImport("user32.dll")] private static extern bool TranslateMessage(ref MSG lpMsg);
@@ -367,11 +385,36 @@ namespace LightFixer
             {
                 keyProc = delegate(int nCode, IntPtr wParam, IntPtr lParam)
                 {
-                    if (nCode >= 0 && (wParam == (IntPtr)0x100 || wParam == (IntPtr)0x104))
+                    if (nCode >= 0)
                     {
-                        lastKeyTick = unchecked((uint)Environment.TickCount);
-                        // cut a long sleep short: the light must come back at once
-                        try { wakeEvent.Set(); } catch { }
+                        bool down = (wParam == (IntPtr)0x100 || wParam == (IntPtr)0x104);
+                        bool up = (wParam == (IntPtr)0x101 || wParam == (IntPtr)0x105);
+
+                        // Caps Lock as the layout switch: the key never reaches Windows,
+                        // so the lock never engages and the Caps Lock light stays dark.
+                        // Both press and release must be swallowed, otherwise the lock
+                        // would be toggled on the release.
+                        if ((down || up) && (S != null) && S.CapsSwitch)
+                        {
+                            KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                            if (k.vkCode == VkCapital)
+                            {
+                                if (down)
+                                {
+                                    lastKeyTick = unchecked((uint)Environment.TickCount);
+                                    try { wakeEvent.Set(); } catch { }
+                                    try { SwitchLayout(); } catch { }
+                                }
+                                return (IntPtr)1;
+                            }
+                        }
+
+                        if (down)
+                        {
+                            lastKeyTick = unchecked((uint)Environment.TickCount);
+                            // cut a long sleep short: the light must come back at once
+                            try { wakeEvent.Set(); } catch { }
+                        }
                     }
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
                 };
@@ -392,6 +435,35 @@ namespace LightFixer
             });
             t.IsBackground = true;
             t.Start();
+        }
+
+        // Switches the keyboard layout of the window that has the focus. The message
+        // is posted, not activated in our own thread: the focus belongs to another
+        // program, and only that program's window can change its own layout.
+        private static void SwitchLayout()
+        {
+            IntPtr hwnd = GetForegroundWindow();
+            uint pid;
+            uint tid = (hwnd != IntPtr.Zero) ? GetWindowThreadProcessId(hwnd, out pid) : 0;
+
+            int n = GetKeyboardLayoutList(0, null);
+            if (n <= 1) return;                      // nothing to switch between
+            IntPtr[] list = new IntPtr[n];
+            if (GetKeyboardLayoutList(n, list) <= 0) return;
+
+            IntPtr cur = (tid != 0) ? GetKeyboardLayout(tid) : IntPtr.Zero;
+            int curLang = ((int)cur) & 0xFFFF;
+            int idx = -1;
+            for (int i = 0; i < n; i++)
+            {
+                // compare the language only: the same language may be installed twice
+                // (two English layouts), and then the key would not move at all
+                if ((((int)list[i]) & 0xFFFF) == curLang) { idx = i; break; }
+            }
+            IntPtr next = (idx >= 0) ? list[(idx + 1) % n] : list[0];
+
+            if (hwnd != IntPtr.Zero) PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
+            else ActivateKeyboardLayout(next, 0);
         }
 
         private static long IdleMs()
@@ -756,6 +828,7 @@ namespace LightFixer
         private static DropDown cbTime;
         private static CheckBox cbMouse;
         private static CheckBox cbAutostart, cbBoot;   // program start: with Windows, before sign-in
+        private static CheckBox cbCaps;                // Caps Lock as the layout switch
         private static CardPanel cardBehaviour, cardStartup, cardSupport;
         // kept in a field on purpose: a ToolTip that nothing references is collected
         // by the garbage collector and the hints silently stop appearing
@@ -1285,7 +1358,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.1";
+            form.Text = "LightFixer BRI-721  v1.2";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1304,7 +1377,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.1";
+            title.Text = "LightFixer BRI-721   v1.2";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -1500,12 +1573,12 @@ namespace LightFixer
             // ---- the program itself: two things Windows must do on its own
             Panel sepStart = new Panel();
             sepStart.BackColor = CLine;
-            sepStart.SetBounds(16, 142, 388, 1);
+            sepStart.SetBounds(16, 138, 388, 1);
             cardStartup.Controls.Add(sepStart);
 
             cbAutostart = new CheckBox();
             cbAutostart.Text = L("Запускать программу вместе с Windows", "Start the program with Windows");
-            cbAutostart.SetBounds(16, 146, 388, 20);
+            cbAutostart.SetBounds(16, 142, 388, 20);
             cardStartup.Controls.Add(cbAutostart);
             tipStartup.SetToolTip(cbAutostart,
                 L("Значок программы в трее появится сразу после входа в Windows,\r\nи подсветка будет работать по правилам этой программы.\r\nБез этой галочки программа не запускается сама — и подсветку\r\nпридётся настраивать клавишами ноутбука.",
@@ -1514,11 +1587,21 @@ namespace LightFixer
             cbBoot = new CheckBox();
             cbBoot.Text = L("Включать подсветку до входа в Windows (при вводе пароля)",
                             "Light up before sign-in (at the password screen)");
-            cbBoot.SetBounds(16, 168, 388, 20);
+            cbBoot.SetBounds(16, 164, 388, 20);
             cardStartup.Controls.Add(cbBoot);
             tipStartup.SetToolTip(cbBoot,
                 L("Клавиатура загорается уже при вводе пароля Windows, сразу после включения ноутбука.\r\nРаботает и без входа в систему: отдельная задача Windows, окно не появляется.",
                   "The keyboard lights up while the Windows password is typed, right after power-on.\r\nIt works even before sign-in: a separate Windows task, no window appears."));
+
+            // Caps Lock as the layout switch: the key is intercepted and never reaches
+            // Windows, so the lock itself never turns on and its light stays dark.
+            cbCaps = new CheckBox();
+            cbCaps.Text = L("Caps Lock переключает рус/англ", "Caps Lock switches RU/EN");
+            cbCaps.SetBounds(16, 186, 388, 20);
+            cardStartup.Controls.Add(cbCaps);
+            tipStartup.SetToolTip(cbCaps,
+                L("Нажатие Caps Lock переключает раскладку клавиатуры.\r\nФиксация заглавных букв при этом не включается, лампочка Caps Lock не горит.\r\nБез галочки клавиша работает как обычно.",
+                  "Pressing Caps Lock switches the keyboard layout.\r\nCapital letters are not locked, and the Caps Lock light stays off.\r\nWithout the tick the key works as usual."));
 
             // ---- save state, always in the same slot so nothing jumps
             picStatus = new PictureBox();
@@ -1680,6 +1763,7 @@ namespace LightFixer
             cbMouse.CheckedChanged += delegate { SetDirty(); };
             cbAutostart.CheckedChanged += delegate { SetDirty(); };
             cbBoot.CheckedChanged += delegate { SetDirty(); };
+            cbCaps.CheckedChanged += delegate { SetDirty(); };
 
             cbTime.SelectedIndexChanged += delegate
             {
@@ -1773,6 +1857,7 @@ namespace LightFixer
             // the one that really decides whether the program starts
             cbAutostart.Checked = TaskEnabled();
             cbBoot.Checked = S.BootLight;
+            cbCaps.Checked = S.CapsSwitch;
 
             int idx = Array.IndexOf(IdleValues, S.IdleSeconds);
             if (idx < 0) idx = IdleValues.Length - 1;   // not in the list - show it as "your own value"
@@ -1790,7 +1875,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.1";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.2";
         }
 
         // ---------- unsaved changes ----------
@@ -1878,6 +1963,7 @@ namespace LightFixer
                 else S.IdleSeconds = IdleValues[cbTime.SelectedIndex];
                 S.MouseWake = cbMouse.Checked;
                 S.BootLight = cbBoot.Checked;
+                S.CapsSwitch = cbCaps.Checked;
                 if (rbOff.Checked) S.Startup = "off";
                 else if (rbLast.Checked) S.Startup = "last";
                 else if (rbOn.Checked) S.Startup = (segLevel.SelectedIndex == 1) ? "high" : "low";
@@ -1902,7 +1988,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.1";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.2";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2055,7 +2141,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.1", "version 1.1");
+                pill.Text = L("версия 1.2", "version 1.2");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;
