@@ -1394,7 +1394,8 @@ namespace LightFixer
             // after the same pause as before the program was installed
             try { Engine.HandBackToLaptop(); }
             catch { }
-            Engine.SaveExitState();
+            // the state is saved by the ApplicationExit handler below - a direct
+            // call here only produced a second identical write to the journal
             if (tray != null) { tray.Visible = false; tray.Dispose(); }
             Application.Exit();
         }
