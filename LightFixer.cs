@@ -192,6 +192,7 @@ namespace LightFixer
         private static DateTime startupGrace = DateTime.MinValue;
         private static DateTime suppressUntil = DateTime.MinValue;
         private static string lastLogState = "";
+        private static string lastCheckSig = "";
         private static DateTime lastErrLog = DateTime.MinValue;
         private static int seenVersion = -1;
 
@@ -575,8 +576,16 @@ namespace LightFixer
             if (m < 0) return;
             if (m == expected) return;            // our own light, nothing to learn
             // kept in the log on purpose: when a press looks dead, this line says at once
-            // whether the program saw the change and what it decided to do about it
-            Log("check: firmware " + m + ", expected " + expected + ", idle " + (idleMs / 1000) + "s, grace " + ((now < startupGrace) ? "on" : "off") + ", resume " + ((now < resumeGrace) ? "on" : "off"));
+            // whether the program saw the change and what it decided to do about it.
+            // Written only when the picture changes, not on every pass: an unreadable
+            // mode or a long grace would otherwise fill the journal at a line per second
+            // and push out the lines that are worth keeping (the file keeps 400 lines).
+            string sig = "firmware " + m + ", expected " + expected + ", grace " + ((now < startupGrace) ? "on" : "off") + ", resume " + ((now < resumeGrace) ? "on" : "off");
+            if (sig != lastCheckSig)
+            {
+                lastCheckSig = sig;
+                Log("check: " + sig + ", idle " + (idleMs / 1000) + "s");
+            }
             if (m != ModeOff && m != ModeLow && m != ModeHigh && m != ModeAuto) return;
 
             // right after waking the light is changed by the laptop itself, not by a hand
@@ -756,7 +765,7 @@ namespace LightFixer
                             Log("light set to " + levelMode + " rc=" + rc + "; idle " + S.IdleSeconds + "s");
                             // the short grace belongs to the program's own start only. It used
                             // to be applied after every save too, so a newly set idle pause was
-                            // ignored for eight seconds and the light stayed on "a bit longer"
+                            // ignored for a few seconds and the light stayed on "a bit longer"
                             if (!initialSetupDone) startupGrace = now.AddSeconds(3);
                         }
                         else
