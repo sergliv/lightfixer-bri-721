@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+using Microsoft.Win32;
 using System;
 using System.Diagnostics;
 using System.Drawing;
@@ -33,8 +34,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
+[assembly: AssemblyFileVersion("1.2.1.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -94,7 +95,8 @@ namespace LightFixer
                 // a damaged file must not produce nonsense values
                 if (IdleSeconds < 0 || IdleSeconds > 86399) IdleSeconds = 5;
                 if (Level != "low" && Level != "high") Level = "off";
-                if (LastLevel != "low" && LastLevel != "high") LastLevel = "low";
+                // "off" is a real answer too: "as it was" may mean the light was dark
+                if (LastLevel != "low" && LastLevel != "high" && LastLevel != "off") LastLevel = "low";
                 if (Control != "native") Control = "ours";
                 if (Startup != "off" && Startup != "low" && Startup != "high") Startup = "last";
             }
@@ -522,7 +524,33 @@ namespace LightFixer
             stateOn = (m != ModeOff);
             expected = m;
             stateKnown = true;
+            RememberState();
             Log("Fn+Space: light " + (m == ModeOff ? "off" : (m == ModeHigh ? "high" : (m == ModeAuto ? "auto" : "low"))));
+        }
+
+        // The state the light is in right now, kept in memory: "off" or the brightness.
+        // "As it was" at the next power-on depends on it, so it must follow every change,
+        // including the program's own idle switch-off - otherwise a laptop left dark
+        // would greet the user with a lit keyboard in the morning.
+        private static void RememberState()
+        {
+            if (S == null) return;
+            string was = stateOn ? (levelMode == ModeHigh ? "high" : "low") : "off";
+            if (S.LastLevel != was) S.LastLevel = was;
+        }
+
+        // Written to the settings file when Windows shuts down or goes to sleep: the
+        // /boot copy reads that file before anybody signs in, so it has to be on disk.
+        public static void SaveExitState()
+        {
+            try
+            {
+                if (S == null) return;
+                RememberState();
+                S.Save();
+                Log("state saved: light " + S.LastLevel);
+            }
+            catch { }
         }
 
         // Fn+Space must be noticed before the idle rule makes up its mind, otherwise the
@@ -776,6 +804,7 @@ namespace LightFixer
                         // nothing is put back on purpose: a press of Fn+Space always wins, and
                         // the only thing the program does by itself is going dark after idle
                         // and coming back when the user touches the keyboard or the mouse.
+                        RememberState();
                     }
                 }
                 catch (Exception ex)
@@ -1036,6 +1065,17 @@ namespace LightFixer
             BuildTray();
 
             if (!hidden) { form.Show(); form.Activate(); }
+
+            // the state of the light must reach the disk before the laptop goes dark:
+            // the /boot copy reads settings.json before anybody signs in. Shutdown,
+            // sign-out and sleep all get a chance to write it.
+            Application.ApplicationExit += delegate { Engine.SaveExitState(); };
+            SystemEvents.SessionEnding += delegate { Engine.SaveExitState(); };
+            SystemEvents.PowerModeChanged += delegate(object s, PowerModeChangedEventArgs e)
+            {
+                if (e.Mode == PowerModes.Suspend) Engine.SaveExitState();
+            };
+
             Application.Run();
         }
 
@@ -1335,6 +1375,7 @@ namespace LightFixer
             // after the same pause as before the program was installed
             try { Engine.HandBackToLaptop(); }
             catch { }
+            Engine.SaveExitState();
             if (tray != null) { tray.Visible = false; tray.Dispose(); }
             Application.Exit();
         }
@@ -1358,7 +1399,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.2";
+            form.Text = "LightFixer BRI-721  v1.2.1";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1377,7 +1418,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.2";
+            title.Text = "LightFixer BRI-721   v1.2.1";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -1875,7 +1916,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.2";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.2.1";
         }
 
         // ---------- unsaved changes ----------
@@ -1988,7 +2029,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.2";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.2.1";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2141,7 +2182,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.2", "version 1.2");
+                pill.Text = L("версия 1.2.1", "version 1.2.1");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;

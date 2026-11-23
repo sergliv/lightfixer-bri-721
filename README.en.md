@@ -1,6 +1,11 @@
-﻿# LightFixer BRI-721  —  version 1.2
+﻿# LightFixer BRI-721  —  version 1.2.1
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
+
+**New in 1.2.1.** In the “as it was before shutdown” mode the program now remembers
+whether the backlight was lit, not only its brightness. A laptop turned off with the
+light out will come back with the light out. Previously this mode always restored
+the low level.
 
 **New in 1.2.** The **Caps Lock** key can switch the Ru/En keyboard layout — both
 skills now live in one application and one tray icon: tick “Caps Lock switches Ru/En”
