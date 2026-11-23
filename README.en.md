@@ -1,6 +1,8 @@
-﻿# LightFixer BRI-721  —  version 1.2.1
+﻿# LightFixer BRI-721  —  version 1.2.2
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
+
+**New in 1.2.2.** A laptop turned off with the backlight already out now comes back with it out, and Fn+Space turns it on as usual. In 1.2.1 the keys did nothing in that state.
 
 **New in 1.2.1.** In the “as it was before shutdown” mode the program now remembers
 whether the backlight was lit, not only its brightness. A laptop turned off with the
