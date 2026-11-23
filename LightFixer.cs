@@ -34,8 +34,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("1.2.2.0")]
-[assembly: AssemblyFileVersion("1.2.2.0")]
+[assembly: AssemblyVersion("1.2.4.0")]
+[assembly: AssemblyFileVersion("1.2.4.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -564,16 +564,19 @@ namespace LightFixer
             if (S.Control != "ours") return;      // "Штатные настройки HONOR": hands off
             if (!S.Enabled) return;
 
-            // Nobody is at the keyboard: a press is impossible, so the firmware is not
-            // asked ten times a second for nothing. This is the one place where the
-            // program burned processor time while the laptop stood idle all day.
-            // The first key or mouse move drops the idle counter, and the very next
-            // pass (within 100 ms) asks the firmware again.
-            if (idleMs > 30000) return;
-
+            // No early return for a long silence here. Fn+Space is handled by the
+            // laptop's own controller and never reaches Windows, so it does NOT drop
+            // the idle counter: skipping the check "while nobody is at the keyboard"
+            // made the first presses after a reboot invisible - the light stayed on
+            // the firmware's "auto" step and only the popup changed. The loop is slow
+            // while idle (one second per pass), so one inexpensive read of the mode is
+            // all this costs.
             int m = GetMode();
             if (m < 0) return;
             if (m == expected) return;            // our own light, nothing to learn
+            // kept in the log on purpose: when a press looks dead, this line says at once
+            // whether the program saw the change and what it decided to do about it
+            Log("check: firmware " + m + ", expected " + expected + ", idle " + (idleMs / 1000) + "s, grace " + ((now < startupGrace) ? "on" : "off") + ", resume " + ((now < resumeGrace) ? "on" : "off"));
             if (m != ModeOff && m != ModeLow && m != ModeHigh && m != ModeAuto) return;
 
             // right after waking the light is changed by the laptop itself, not by a hand
@@ -637,11 +640,14 @@ namespace LightFixer
                 {
                     DateTime now = DateTime.Now;
 
-                    // the loop ticks five times a second; a gap means the laptop was asleep
-                    if ((now - lastLoopTick).TotalSeconds > 5)
+                    // the loop ticks five times a second; a gap means the laptop was asleep.
+                    // The very first pass has no previous tick at all - that is the program's
+                    // own start, not a wake-up, and turning it into a grace period left the
+                    // first presses after a reboot unnoticed: only the "auto" popup showed.
+                    if (lastLoopTick != DateTime.MinValue && (now - lastLoopTick).TotalSeconds > 5)
                     {
-                        if (lastLoopTick != DateTime.MinValue) Log("wake-up: the light is left alone for 20 s");
-                        resumeGrace = now.AddSeconds(20);
+                        Log("wake-up: the light is left alone for 8 s");
+                        resumeGrace = now.AddSeconds(8);
                     }
                     lastLoopTick = now;
 
@@ -751,7 +757,7 @@ namespace LightFixer
                             // the short grace belongs to the program's own start only. It used
                             // to be applied after every save too, so a newly set idle pause was
                             // ignored for eight seconds and the light stayed on "a bit longer"
-                            if (!initialSetupDone) startupGrace = now.AddSeconds(8);
+                            if (!initialSetupDone) startupGrace = now.AddSeconds(3);
                         }
                         else
                         {
@@ -759,7 +765,7 @@ namespace LightFixer
                             expected = ModeOff;
                             lastOffAt = now;
                             Log("level is off, keeping dark");
-                            if (!initialSetupDone) startupGrace = now.AddSeconds(8);
+                            if (!initialSetupDone) startupGrace = now.AddSeconds(3);
                         }
                         initialSetupDone = true;
                         lastMode = now;
@@ -1403,7 +1409,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.2.2";
+            form.Text = "LightFixer BRI-721  v1.2.4";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1422,7 +1428,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.2.2";
+            title.Text = "LightFixer BRI-721   v1.2.4";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -1920,7 +1926,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.2.2";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.2.4";
         }
 
         // ---------- unsaved changes ----------
@@ -2033,7 +2039,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.2.2";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.2.4";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2186,7 +2192,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.2.2", "version 1.2.2");
+                pill.Text = L("версия 1.2.4", "version 1.2.4");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;

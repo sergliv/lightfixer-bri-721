@@ -1,6 +1,8 @@
-﻿# LightFixer BRI-721  —  version 1.2.2
+﻿# LightFixer BRI-721  —  version 1.2.4
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
+
+**New in 1.2.4.** Fn+Space works from the very first press after a reboot. In 1.2.2–1.2.3 the first presses were ignored: only the "Auto" popup appeared and the light did not switch.
 
 **New in 1.2.2.** A laptop turned off with the backlight already out now comes back with it out, and Fn+Space turns it on as usual. In 1.2.1 the keys did nothing in that state.
 
@@ -181,7 +183,7 @@ core**.
 
 When the keyboard and the mouse are left alone for more than 30 seconds, the
 program asks the firmware once a second — enough to notice the end of a pause.
-Measured while idle: **about 0.03 % of one core** (16 ms per minute), which is
+Measured while idle: **a fraction of one percent of a core**, which is
 roughly a tenth of a percent of the battery over ten hours of idling. Any key press
 wakes the program at once instead of waiting for the rest of that second, so the
 backlight comes back without delay.
