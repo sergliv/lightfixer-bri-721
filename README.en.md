@@ -1,16 +1,20 @@
-﻿# LightFixer BRI-721  —  version 1.2.7
+﻿# LightFixer BRI-721  —  version 2.0
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
-**New in 1.2.7.** A press of Fn+Space is now reported to the program by the laptop
-itself: the controller tells Windows which step was pressed, and the program hears
-it at once, within milliseconds. Before, the firmware had to be asked ten times a
-second what the light was doing — that is where the two-to-three-second delay in
-idle came from. Measured on this model: a press is handled in **0 ms**, and idling
-costs almost nothing. The safety net stays: one read of the light every 30 seconds
-and one more after waking up; if it ever sees a change that was not reported, the
-program goes back to the frequent reading by itself and writes about it to the
-journal.
+**New in 2.0.** The main change: a press of Fn+Space is now reported to the program
+by the laptop itself. The controller tells Windows which step was pressed, and the
+program hears it at once — within milliseconds, not "the next time it looks". The
+two-to-three-second delay after idling is gone, and the constant asking of the
+firmware is gone with it. The cost dropped too: about **0.03 % of one core** against
+0.3–0.55 % in the first versions (roughly one second of processor time per hour of
+idling). The safety net stays: one read of the light every 30 seconds and one more
+after waking up; if it ever sees a change that was not reported, the program goes
+back to the frequent reading by itself and writes about it to the journal. Version
+2.0 includes everything built up since 1.0: Caps Lock switches Ru/En, the backlight
+level at power-on, switching off after a pause, and the "HONOR's own settings" mode.
+
+**Was new in 1.2.7.** (part of 2.0) A press of Fn+Space is heard as an event from the laptop, the polling of the firmware is gone.
 
 **Was new in 1.2.6.** Caps Lock switches Ru/En right after sign-in again: the keyboard hook is installed at the very beginning of the launch, not after the work with Task Scheduler (which used to take up to 18 seconds). If the window in front refuses the switch (Explorer does, for example), the request is repeated the system way.
 
