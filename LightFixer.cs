@@ -293,6 +293,8 @@ namespace LightFixer
         private static int capsPendingGen;
         // until this moment the engine loop stays quick, so the switch is checked at once
         private static int capsWatchUntil;
+        // when the firmware mode was last read: in a long silence every second read is skipped
+        private static DateTime lastNotice = DateTime.MinValue;
 
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
@@ -988,7 +990,17 @@ namespace LightFixer
                     }
 
                     idleMs = IdleMs();
-                    NoticeUserSwitch(now, idleMs);   // Fn+Space first, the idle rule after it
+                    // The firmware read is the only thing this program spends while the
+                    // laptop stands untouched, and one read costs several milliseconds.
+                    // In a long silence every second read is skipped: a press of Fn+Space
+                    // is then noticed within two seconds instead of one, and nobody is at
+                    // the keyboard to see that difference - the light still comes on.
+                    bool everyPass = (idleMs <= 30000) || (now < startupGrace) || (now < resumeGrace);
+                    if (everyPass || (now - lastNotice).TotalSeconds >= 2)
+                    {
+                        lastNotice = now;
+                        NoticeUserSwitch(now, idleMs);   // Fn+Space first, the idle rule after it
+                    }
 
                     if (S.Control != "native")
                     {
