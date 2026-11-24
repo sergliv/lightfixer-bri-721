@@ -896,10 +896,12 @@ namespace LightFixer
             // the light moved and no event said so: the channel has gone quiet (it can
             // happen after a long sleep). The press is still taken, and the frequent
             // reading comes back so that no press is ever lost.
-            if (evOk)
+            // In the first minute after a wake-up the laptop moves the light by itself,
+            // so a change there proves nothing about the channel and is just taken.
+            if (evOk && now > resumeGrace.AddSeconds(60))
             {
                 evOk = false;
-                Log("event channel missed a press: reading the light directly again");
+                Log("the light changed without an event: reading the light directly again");
             }
 
             // "auto" (16) is the second step of the cycle and its light looks exactly like
@@ -959,6 +961,8 @@ namespace LightFixer
             DateTime lastTimeout = DateTime.MinValue;
             bool fwRead = false;
             long idleMs = 0;   // how long the user has been away, see the nap at the end
+            DateTime lastObsCheck = DateTime.MinValue;   // "observe.txt" is looked for rarely
+            bool obsOn = false;
 
             while (true)
             {
@@ -987,6 +991,10 @@ namespace LightFixer
                     // front refused the request and the key looks dead to the user.
                     CheckCapsResult();
 
+                    // how long the user has been away: the settings check and the idle
+                    // rule both need it, and one call is enough for the whole pass
+                    idleMs = IdleMs();
+
                     if (S.Version != seenVersion)
                     {
                         seenVersion = S.Version;
@@ -994,8 +1002,13 @@ namespace LightFixer
                         lastTimeout = DateTime.MinValue;
                         lastMode = DateTime.MinValue;
                     }
-                    else if ((now - lastSettings).TotalSeconds >= 3)
+                    else if ((now - lastSettings).TotalSeconds >= (idleMs > 30000 ? 10 : 3))
                     {
+                        // Reading the settings file is a disk access, and it was done every
+                        // three seconds even on a laptop left alone all night: that alone
+                        // cost more than the firmware question this version got rid of.
+                        // While somebody is at the keyboard it stays three seconds, so a
+                        // saved setting is applied at once; in a long silence ten is plenty.
                         lastSettings = now;
                         S.Load();
                     }
@@ -1003,7 +1016,14 @@ namespace LightFixer
                     // diagnostic mode: a file "observe.txt" next to the program makes it
                     // only watch the firmware and write down every change, touching nothing.
                     // it is used to learn the real Fn+Space cycle instead of guessing it.
-                    if (File.Exists(Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "observe.txt")))
+                    // The file is looked for every ten seconds, not on every pass: a check
+                    // of the disk ten times a second was part of what the laptop spent.
+                    if ((now - lastObsCheck).TotalSeconds >= 10)
+                    {
+                        lastObsCheck = now;
+                        obsOn = File.Exists(Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "observe.txt"));
+                    }
+                    if (obsOn)
                     {
                         int om = GetMode();
                         if (om != obsLast)
@@ -1143,7 +1163,6 @@ namespace LightFixer
                     // before the idle rule, which must learn about the press first
                     HandleFirmwareEvent(now);
 
-                    idleMs = IdleMs();
                     // With the event channel open the light is only read now and then, as a
                     // safety net: if it ever misses a press, the read sees it and the old
                     // frequent reading comes back by itself (see NoticeUserSwitch).
