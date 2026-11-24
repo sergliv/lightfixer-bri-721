@@ -194,7 +194,8 @@ administrator rights, and as SYSTEM at boot.
 controller itself tells Windows about every press of Fn+Space, and the program
 simply waits for that message. A rare safety net remains — one read of the light
 every 30 seconds, and one more right after the laptop wakes up. Measured: a press
-is handled in **0 ms**, and idling costs **hundredths of a percent of one core**.
+is handled in **0 ms**, and the cost is about **0.03 % of one core** (roughly one
+second of processor time per hour of idling).
 For comparison: 0.3–0.55 % in version 1.0 and 0.1 % in 1.2.6.
 
 Any key press wakes the program at once, so the backlight comes back without delay,
