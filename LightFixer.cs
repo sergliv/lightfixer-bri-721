@@ -1211,19 +1211,20 @@ namespace LightFixer
                     Thread.Sleep(2000);
                 }
 
-                // 100 ms, not 200: Fn+Space passes through the firmware's "auto" state for a
-                // very short moment, and a slower look misses it - the light then stays in
-                // auto and the press appears not to work.
+                // 200 ms is enough now. The old 100 ms was needed only to catch the short
+                // "auto" step the firmware held for about 50 ms - a press of Fn+Space no
+                // longer has to be caught by looking, it is reported by the laptop itself.
+                // What is left for the loop is the idle rule and the Caps answer, and the
+                // difference between 100 and 200 ms cannot be seen: a key press wakes the
+                // loop at once through wakeEvent.
                 // While nobody is at the keyboard the pace drops to one look a second: the
-                // only question then is "is the pause over", and a second is plenty. A key
-                // press wakes the loop immediately through wakeEvent, so the light comes
-                // back without waiting for the full second.
+                // only question then is "is the pause over", and a second is plenty.
                 // With the mouse option on, the mouse moves are still noticed within that
                 // second - a mouse cannot wake a sleeping loop, only a key can.
                 int nap;
                 if (S.Control != "ours" || !S.Enabled) nap = 1000;
                 else if (idleMs > 30000) nap = 1000;
-                else nap = 100;
+                else nap = 200;
                 // after a Caps Lock press the loop stays quick for a second: the result
                 // of the switch is checked here, and a one-second sleep would make the
                 // fallback come a whole second late - the key felt sluggish
