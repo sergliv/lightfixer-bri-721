@@ -1,8 +1,10 @@
-﻿# LightFixer BRI-721  —  version 1.2.5
+﻿# LightFixer BRI-721  —  version 1.2.6
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
-**New in 1.2.5.** The keyboard hook is now re-installed every five minutes: Windows sometimes drops it silently, and then both the Caps Lock Ru/En switch and the instant wake-up of the backlight stop working. If the real Caps Lock somehow got switched on (a press during the first seconds after launch, for example), the next press turns it off by itself. A `caps:` line in the journal shows whether a press arrived and whether the layout really changed.
+**New in 1.2.6.** Caps Lock switches Ru/En right after sign-in again: the keyboard hook is installed at the very beginning of the launch, not after the work with Task Scheduler (which used to take up to 18 seconds). If the window in front refuses the switch (Explorer does, for example), the request is repeated the system way.
+
+**New in 1.2.5.** The keyboard hook is re-installed every five minutes: Windows sometimes drops it silently, and then both the Caps Lock switch and the instant wake-up of the backlight stop working. If the real Caps Lock somehow got switched on, the next press turns it off by itself. A `caps:` line in the journal shows whether a press arrived and whether the layout really changed.
 
 **New in 1.2.4.** Fn+Space works from the very first press after a reboot. In 1.2.2–1.2.3 the first presses were ignored and the light did not switch.
 

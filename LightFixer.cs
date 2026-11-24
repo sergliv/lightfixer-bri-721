@@ -34,8 +34,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("1.2.5.0")]
-[assembly: AssemblyFileVersion("1.2.5.0")]
+[assembly: AssemblyVersion("1.2.6.0")]
+[assembly: AssemblyFileVersion("1.2.6.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -246,6 +246,7 @@ namespace LightFixer
         private static int capsAskedTick;            // TickCount: a plain int, safe to share
         private static uint capsPid;
         private static volatile bool capsPending;
+        private static int capsStage;                // 0 - asked the window, 1 - broadcast
 
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
@@ -538,6 +539,7 @@ namespace LightFixer
             capsNext = next;
             capsPid = pid;
             capsAskedTick = Environment.TickCount;
+            capsStage = 0;
             capsPending = true;
 
             if (hwnd != IntPtr.Zero) PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
@@ -550,22 +552,41 @@ namespace LightFixer
         {
             if (!capsPending) return;
             if (unchecked(Environment.TickCount - capsAskedTick) < 300) return;
-            capsPending = false;
             int nextLang = ((int)capsNext) & 0xFFFF;
-            string result;
+
             if (capsTid == 0)
             {
                 // no window had the focus: the switch went to our own process instead,
                 // and the window's layout says nothing about whether it worked
-                result = ": no foreground window at the time";
+                capsPending = false;
+                Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
+                    nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + ": no foreground window at the time");
+                return;
             }
-            else
+
+            if ((((int)GetKeyboardLayout(capsTid)) & 0xFFFF) == nextLang)
             {
-                int langNow = ((int)GetKeyboardLayout(capsTid)) & 0xFFFF;
-                result = (langNow == nextLang) ? ": changed" : (": NOT changed (now 0x" + langNow.ToString("X4") + ")");
+                capsPending = false;
+                Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
+                    nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + ": changed");
+                return;
             }
+
+            // Explorer and a few other windows take the request and do nothing with it.
+            // Second attempt: the same message to every top-level window at once - this
+            // is how the system switches the layout when no window owns it.
+            if (capsStage == 0)
+            {
+                capsStage = 1;
+                PostMessage((IntPtr)0xFFFF, WmInputLangChangeRequest, IntPtr.Zero, capsNext);
+                capsAskedTick = Environment.TickCount;
+                return;
+            }
+
+            capsPending = false;
+            int now = ((int)GetKeyboardLayout(capsTid)) & 0xFFFF;
             Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
-                nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + result);
+                nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + ": NOT changed (now 0x" + now.ToString("X4") + ")");
         }
 
         private static long IdleMs()
@@ -1172,6 +1193,11 @@ namespace LightFixer
             S.Load();
             if (S.Lang != "ru" && S.Lang != "en") S.Lang = LangFromSystem();
 
+            // the engine (and with it the keyboard hook) starts FIRST. Task Scheduler
+            // work below runs three system programs and on a cold sign-in took 18
+            // seconds, and every one of them was time when Caps Lock did nothing.
+            Engine.Start(S);
+
             // autostart is a fixed behaviour now, not a switch: the task is always
             // created, and an existing one is refreshed (the program may have moved)
             if (TaskExists())
@@ -1186,7 +1212,6 @@ namespace LightFixer
             }
             taskChecked = DateTime.MinValue;
 
-            Engine.Start(S);
             BuildForm();
             BuildTray();
 
@@ -1526,7 +1551,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.2.5";
+            form.Text = "LightFixer BRI-721  v1.2.6";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1545,7 +1570,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.2.5";
+            title.Text = "LightFixer BRI-721   v1.2.6";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -2043,7 +2068,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.2.5";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.2.6";
         }
 
         // ---------- unsaved changes ----------
@@ -2156,7 +2181,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.2.5";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.2.6";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2309,7 +2334,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.2.5", "version 1.2.5");
+                pill.Text = L("версия 1.2.6", "version 1.2.6");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;
