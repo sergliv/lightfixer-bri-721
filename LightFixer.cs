@@ -34,8 +34,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("1.2.6.0")]
-[assembly: AssemblyFileVersion("1.2.6.0")]
+[assembly: AssemblyVersion("1.2.7.0")]
+[assembly: AssemblyFileVersion("1.2.7.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -296,6 +296,25 @@ namespace LightFixer
         // when the firmware mode was last read: in a long silence every second read is skipped
         private static DateTime lastNotice = DateTime.MinValue;
 
+        // ---- Fn+Space, told by the laptop itself ----
+        // The same ACPI device the program commands also reports every Fn+Space press as
+        // a WMI event (root\wmi, OemWMIEvent). The event carries the step that was
+        // pressed, so there is nothing to guess from the light and no need to read the
+        // firmware ten times a second. The old reading stays below as a safety net.
+        private static volatile bool evOk;          // the channel is open and trusted
+        private static volatile int evForce;        // the step from the last event
+        private static volatile uint evTick;        // TickCount when it arrived, for the journal
+        private static int evCount;                 // events from the watcher thread
+        private static int evHandled;               // events already used by the loop
+        private static ManagementEventWatcher evWatch;
+        private static DateTime evLastTry = DateTime.MinValue;
+        private static DateTime evLastFailLog = DateTime.MinValue;
+        // 0x2B1..0x2B4 are the four steps, the same numbers the Linux driver uses
+        private const int EvOff = 0x2B1;
+        private const int EvLow = 0x2B2;
+        private const int EvHigh = 0x2B3;
+        private const int EvAuto = 0x2B4;
+
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
         // laptop left standing overnight that is the only place the program spends
@@ -387,6 +406,103 @@ namespace LightFixer
         private static int GetTimeout() { int v; Send(0x1206, 0, out v); return v; }
         private static int SetMode(int mode) { int v; return Send(0x1406, (ushort)mode, out v); }
         private static int SetTimeout(int seconds) { int v; return Send(0x1106, (ushort)seconds, out v); }
+
+        // ---------- Fn+Space events ----------
+        // Listens to the laptop's own report of Fn+Space. Only the four light steps are
+        // taken: the same channel may carry other notifications of the laptop.
+        private static bool StartEventWatch()
+        {
+            if (evOk) return true;
+            try
+            {
+                ManagementScope scope = new ManagementScope(@"root\wmi");
+                scope.Connect();
+                ManagementEventWatcher w = new ManagementEventWatcher(scope, new WqlEventQuery("SELECT * FROM OemWMIEvent"));
+                w.EventArrived += new EventArrivedEventHandler(OnFirmwareEvent);
+                w.Start();
+                evWatch = w;
+                evOk = true;
+                Log("event channel: press Fn+Space - the laptop reports it itself");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                evOk = false;
+                // the channel is retried now and then, so a failure is written down
+                // rarely: otherwise a laptop that never reports would fill the journal
+                if ((DateTime.Now - evLastFailLog).TotalMinutes >= 10)
+                {
+                    evLastFailLog = DateTime.Now;
+                    Log("event channel unavailable (" + ex.Message + "): the light is read instead");
+                }
+                return false;
+            }
+        }
+
+        private static void StopEventWatch()
+        {
+            ManagementEventWatcher w = evWatch;
+            evWatch = null;
+            evOk = false;
+            if (w == null) return;
+            try { w.Stop(); } catch { }
+            try { w.Dispose(); } catch { }
+        }
+
+        private static void OnFirmwareEvent(object sender, EventArrivedEventArgs e)
+        {
+            // this runs on the watcher's own thread: no work here beyond remembering the
+            // step and waking the engine, everything else is done in the main loop
+            try
+            {
+                object f = e.NewEvent["Force"];
+                if (f == null) return;
+                int code = Convert.ToInt32(f);
+                int m;
+                switch (code)
+                {
+                    case EvOff: m = ModeOff; break;
+                    case EvLow: m = ModeLow; break;
+                    case EvHigh: m = ModeHigh; break;
+                    case EvAuto: m = ModeAuto; break;
+                    default: return;          // not a light step
+                }
+                evForce = m;
+                evTick = unchecked((uint)Environment.TickCount);
+                Interlocked.Increment(ref evCount);
+                try { wakeEvent.Set(); } catch { }
+            }
+            catch { }
+        }
+
+        // A press the laptop reported. Nothing here is guessed: the step is known.
+        private static void HandleFirmwareEvent(DateTime now)
+        {
+            int c = Volatile.Read(ref evCount);
+            if (c == evHandled) return;
+            int m = evForce;
+            int delay = unchecked((int)((uint)Environment.TickCount - evTick));
+            string note = ", reported by the laptop, handled in " + delay + " ms";
+            evHandled = c;
+            if (S == null) return;
+            if (!S.Enabled) return;
+            if (S.Control != "ours") return;   // "Штатные настройки HONOR": hands off
+
+            // after waking the laptop changes the light by itself; that is not a press
+            if (now < resumeGrace) { stateOn = (m != ModeOff); return; }
+
+            // "auto" is the second step of the cycle and its light looks exactly like
+            // "low". It is turned into a real low at once, so the cycle the user sees is
+            // exactly off -> low -> high -> off.
+            if (m == ModeAuto)
+            {
+                int rc = SetMode(ModeLow);
+                if (rc != 0) Log("auto -> low failed rc=" + rc);
+                AdoptUserChoice(ModeLow, now, note);
+                return;
+            }
+            AdoptUserChoice(m, now, note);
+        }
 
         // The keyboard is lit at the password screen: Windows runs this at power-on,
         // before anybody signs in. It only puts the light on the saved level and makes
@@ -686,7 +802,7 @@ namespace LightFixer
         // A press is remembered and NEVER overridden. Every attempt to "correct" the
         // firmware - turning auto into low, putting the light back after a press - was
         // itself what made quick presses vanish and the popup never appear.
-        private static void AdoptUserChoice(int m, DateTime now)
+        private static void AdoptUserChoice(int m, DateTime now, string note = "")
         {
             // a press of Fn+Space is a switch of the moment, it must not rewrite the
             // settings the user saved in the window - those live until he saves again
@@ -715,7 +831,7 @@ namespace LightFixer
             expected = m;
             stateKnown = true;
             RememberState();
-            Log("Fn+Space: light " + (m == ModeOff ? "off" : (m == ModeHigh ? "high" : (m == ModeAuto ? "auto" : "low"))));
+            Log("Fn+Space: light " + (m == ModeOff ? "off" : (m == ModeHigh ? "high" : (m == ModeAuto ? "auto" : "low"))) + note);
         }
 
         // The state the light is in right now, kept in memory: "off" or the brightness.
@@ -777,6 +893,15 @@ namespace LightFixer
             if (now < resumeGrace) { stateOn = (m != ModeOff); return; }
             if (now < startupGrace) return;
 
+            // the light moved and no event said so: the channel has gone quiet (it can
+            // happen after a long sleep). The press is still taken, and the frequent
+            // reading comes back so that no press is ever lost.
+            if (evOk)
+            {
+                evOk = false;
+                Log("event channel missed a press: reading the light directly again");
+            }
+
             // "auto" (16) is the second step of the cycle and its light looks exactly like
             // "low", so a press would show "low" twice in a row. It is turned into a real
             // low at once, and that makes the cycle exactly off -> low -> high -> off.
@@ -825,6 +950,10 @@ namespace LightFixer
             while (DateTime.Now < deadline && !Connect()) Thread.Sleep(3000);
             Log(dev != null ? "BIOS WMI ready" : "ERROR: BIOS WMI unavailable");
 
+            // the event channel is opened right here: from this moment a press of
+            // Fn+Space is known at once instead of being found out by reading the light
+            StartEventWatch();
+
             DateTime lastSettings = DateTime.MinValue;
             DateTime lastMode = DateTime.MinValue;
             DateTime lastTimeout = DateTime.MinValue;
@@ -845,6 +974,11 @@ namespace LightFixer
                     {
                         Log("wake-up: the light is left alone for 8 s");
                         resumeGrace = now.AddSeconds(8);
+                        // the laptop's WMI can come back asleep after a sleep: the channel
+                        // is opened again, and the old reading covers the gap meanwhile
+                        StopEventWatch();
+                        evLastTry = now;
+                        StartEventWatch();
                     }
                     lastLoopTick = now;
 
@@ -881,7 +1015,18 @@ namespace LightFixer
                         continue;
                     }
 
-                    if ((now - lastTimeout).TotalSeconds >= 20)
+                    // the channel is tried again now and then: it can go quiet after a
+                    // sleep, and reading the light is only the safety net, not the way
+                    if (!evOk && (now - evLastTry).TotalSeconds >= 60)
+                    {
+                        evLastTry = now;
+                        StartEventWatch();
+                    }
+
+                    // With the event channel open this is the only thing the program still
+                    // asks the firmware, so it is done rarely: the pause it puts to zero is
+                    // a setting, not a watchdog, and nothing resets it in between.
+                    if ((now - lastTimeout).TotalSeconds >= (evOk ? 60 : 20))
                     {
                         lastTimeout = now;
                         // in HONOR mode we do not touch the BIOS at all
@@ -973,10 +1118,15 @@ namespace LightFixer
                         lastMode = now;
                     }
 
+                    // With the event channel open there is nothing left for this look: a
+                    // press is reported directly, and a light moved by the laptop itself
+                    // is caught by the rare safety read below. Two readers of the same
+                    // light would only step on each other: one would take a change for
+                    // "nobody told me", the other for "nothing to do".
                     if ((now - lastMode).TotalSeconds >= 8)
                     {
                         lastMode = now;
-                        if (S.Control != "native")
+                        if (!evOk && S.Control != "native")
                         {
                             int m = GetMode();
                             if (m >= 0 && m != expected)
@@ -989,14 +1139,16 @@ namespace LightFixer
                         }
                     }
 
+                    // a press of Fn+Space, as reported by the laptop itself: this comes
+                    // before the idle rule, which must learn about the press first
+                    HandleFirmwareEvent(now);
+
                     idleMs = IdleMs();
-                    // The firmware read is the only thing this program spends while the
-                    // laptop stands untouched, and one read costs several milliseconds.
-                    // In a long silence every second read is skipped: a press of Fn+Space
-                    // is then noticed within two seconds instead of one, and nobody is at
-                    // the keyboard to see that difference - the light still comes on.
-                    bool everyPass = (idleMs <= 30000) || (now < startupGrace) || (now < resumeGrace);
-                    if (everyPass || (now - lastNotice).TotalSeconds >= 2)
+                    // With the event channel open the light is only read now and then, as a
+                    // safety net: if it ever misses a press, the read sees it and the old
+                    // frequent reading comes back by itself (see NoticeUserSwitch).
+                    bool everyPass = !evOk && ((idleMs <= 30000) || (now < startupGrace) || (now < resumeGrace));
+                    if (everyPass || (now - lastNotice).TotalSeconds >= (evOk ? 30 : 3))
                     {
                         lastNotice = now;
                         NoticeUserSwitch(now, idleMs);   // Fn+Space first, the idle rule after it
@@ -1630,7 +1782,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.2.6";
+            form.Text = "LightFixer BRI-721  v1.2.7";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1649,7 +1801,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.2.6";
+            title.Text = "LightFixer BRI-721   v1.2.7";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -2147,7 +2299,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.2.6";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.2.7";
         }
 
         // ---------- unsaved changes ----------
@@ -2260,7 +2412,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.2.6";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.2.7";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2413,7 +2565,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.2.6", "version 1.2.6");
+                pill.Text = L("версия 1.2.7", "version 1.2.7");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;

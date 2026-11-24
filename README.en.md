@@ -1,8 +1,18 @@
-﻿# LightFixer BRI-721  —  version 1.2.6
+﻿# LightFixer BRI-721  —  version 1.2.7
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
-**New in 1.2.6.** Caps Lock switches Ru/En right after sign-in again: the keyboard hook is installed at the very beginning of the launch, not after the work with Task Scheduler (which used to take up to 18 seconds). If the window in front refuses the switch (Explorer does, for example), the request is repeated the system way.
+**New in 1.2.7.** A press of Fn+Space is now reported to the program by the laptop
+itself: the controller tells Windows which step was pressed, and the program hears
+it at once, within milliseconds. Before, the firmware had to be asked ten times a
+second what the light was doing — that is where the two-to-three-second delay in
+idle came from. Measured on this model: a press is handled in **0 ms**, and idling
+costs almost nothing. The safety net stays: one read of the light every 30 seconds
+and one more after waking up; if it ever sees a change that was not reported, the
+program goes back to the frequent reading by itself and writes about it to the
+journal.
+
+**Was new in 1.2.6.** Caps Lock switches Ru/En right after sign-in again: the keyboard hook is installed at the very beginning of the launch, not after the work with Task Scheduler (which used to take up to 18 seconds). If the window in front refuses the switch (Explorer does, for example), the request is repeated the system way.
 
 **New in 1.2.5.** The keyboard hook is re-installed every five minutes: Windows sometimes drops it silently, and then both the Caps Lock switch and the instant wake-up of the backlight stop working. If the real Caps Lock somehow got switched on, the next press turns it off by itself. A `caps:` line in the journal shows whether a press arrived and whether the layout really changed.
 
@@ -180,21 +190,25 @@ write to, for example `C:\Program Files\LightFixer\`. If it sits in a folder tha
 writable by everyone, replacing the executable gives code execution with
 administrator rights, and as SYSTEM at boot.
 
-**Battery.** While you work, the program asks the firmware for the current mode ten
-times a second: otherwise a press of Fn+Space would be missed (the firmware holds
-the "auto" step for about 50 ms). Measured on this model — **about 0.3–0.5 % of one
-core**.
+**Battery.** Since 1.2.7 the firmware does not have to be asked at all: the
+controller itself tells Windows about every press of Fn+Space, and the program
+simply waits for that message. A rare safety net remains — one read of the light
+every 30 seconds, and one more right after the laptop wakes up. Measured: a press
+is handled in **0 ms**, and idling costs **hundredths of a percent of one core**.
+For comparison: 0.3–0.55 % in version 1.0 and 0.1 % in 1.2.6.
 
-When the keyboard and the mouse are left alone for more than 30 seconds, the
-program asks the firmware once a second — enough to notice the end of a pause.
-Measured while idle: **a fraction of one percent of a core**, which is
-roughly a tenth of a percent of the battery over ten hours of idling. Any key press
-wakes the program at once instead of waiting for the rest of that second, so the
-backlight comes back without delay.
+Any key press wakes the program at once, so the backlight comes back without delay,
+and a press of Fn+Space is seen the moment it happens.
+
+**The "auto" step.** On this model the Fn+Space cycle has four steps: off →
+"auto" → low → high → off. The "auto" step is turned into "low" at once, so the
+light always burns at the low level. The factory word "Auto" that HONOR's on-screen
+popup shows at that step cannot be removed: it is drawn by HONOR's own service from
+its own message, and the program never changes the manufacturer's files.
 
 **Sleep.** The program does not block sleep (it never calls `SetThreadExecutionState`),
 creates no wake timers, and its scheduled task cannot wake the laptop. After waking
-up, the backlight is left alone for 20 seconds so the firmware can settle.
+up, the backlight is left alone for 8 seconds so the firmware can settle.
 
 ## On-screen popup (HONOR)
 
@@ -219,3 +233,4 @@ model designation.
 LightFixer BRI-721 is an independent project. It is not affiliated with, endorsed,
 sponsored or supported by HONOR (including HONOR Device Co., Ltd.), and it is not an
 official HONOR product. The model name is used solely to describe compatibility.
+
