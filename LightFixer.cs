@@ -34,8 +34,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("2.0.1.0")]
-[assembly: AssemblyFileVersion("2.0.1.0")]
+[assembly: AssemblyVersion("2.1.0.0")]
+[assembly: AssemblyFileVersion("2.1.0.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -53,6 +53,10 @@ namespace LightFixer
         public bool MouseWake = true;
         public bool BootLight = true;       // light at the password screen, before sign-in
         public bool CapsSwitch = false;     // Caps Lock switches the keyboard layout, not the lock
+        // the journal is off until the owner asks for it: it exists only to find out why
+        // something did not work, and a program that writes files by default is a program
+        // people have to trust blindly
+        public bool LogEnabled = false;
         public string Lang = "";            // interface language: "ru" | "en"
         public int FwTimeout = 0;           // the laptop's own timeout, kept to restore it on exit
         public string Path;
@@ -81,6 +85,9 @@ namespace LightFixer
                     if (m.Success) BootLight = m.Groups[1].Value == "true";
                     m = Regex.Match(t, "\"capsSwitch\"\\s*:\\s*(true|false)");
                     if (m.Success) CapsSwitch = m.Groups[1].Value == "true";
+                    // a file written by an older version has no such key: logging stays off
+                    m = Regex.Match(t, "\"logEnabled\"\\s*:\\s*(true|false)");
+                    LogEnabled = m.Success && m.Groups[1].Value == "true";
                     m = Regex.Match(t, "\"startup\"\\s*:\\s*\"([^\"]+)\"");
                     if (m.Success) Startup = m.Groups[1].Value;
                     m = Regex.Match(t, "\"lastLevel\"\\s*:\\s*\"([^\"]+)\"");
@@ -117,6 +124,7 @@ namespace LightFixer
                         "    \"mouseWake\":  " + (MouseWake ? "true" : "false") + ",\n" +
                         "    \"bootLight\":  " + (BootLight ? "true" : "false") + ",\n" +
                         "    \"capsSwitch\":  " + (CapsSwitch ? "true" : "false") + ",\n" +
+                        "    \"logEnabled\":  " + (LogEnabled ? "true" : "false") + ",\n" +
                         "    \"idleSeconds\":  " + IdleSeconds.ToString(CultureInfo.InvariantCulture) + ",\n" +
                         "    \"lang\":  \"" + Lang + "\",\n" +
                         "    \"fwTimeout\":  " + FwTimeout.ToString(CultureInfo.InvariantCulture) + "\n" +
@@ -371,6 +379,10 @@ namespace LightFixer
             try
             {
                 if (logPath == null) return;
+                // the journal exists for one purpose only - to find out why something did
+                // not work - and it is written only when the owner has asked for it in the
+                // window. With the box empty the program writes no file at all.
+                if (S == null || !S.LogEnabled) return;
                 lock (logLock)
                 {
                     string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + msg + Environment.NewLine;
@@ -577,6 +589,9 @@ namespace LightFixer
         {
             string dir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
             logPath = Path.Combine(dir, "boot.log");
+            // the journal switch lives in the settings file: the copy that runs before
+            // sign-in has to respect it as well as the tray one
+            if (cfg != null) S = cfg;
             try
             {
                 if (cfg == null) { BootNote("boot: settings were not read, nothing done"); return; }
@@ -607,6 +622,8 @@ namespace LightFixer
         {
             try
             {
+                // the same rule as the main journal: nothing is written unless asked for
+                if (S == null || !S.LogEnabled) return;
                 string path = logPath;
                 if (path == null) return;
                 lock (logLock) File.AppendAllText(path, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + msg + Environment.NewLine, Encoding.UTF8);
@@ -1370,7 +1387,8 @@ namespace LightFixer
         private static CheckBox cbMouse;
         private static CheckBox cbAutostart, cbBoot;   // program start: with Windows, before sign-in
         private static CheckBox cbCaps;                // Caps Lock as the layout switch
-        private static CardPanel cardBehaviour, cardStartup, cardSupport;
+        private static CheckBox cbLog;                 // keep the journal of the program's work
+        private static CardPanel cardBehaviour, cardStartup, cardSupport, cardLog;
         // kept in a field on purpose: a ToolTip that nothing references is collected
         // by the garbage collector and the hints silently stop appearing
         private static ToolTip tipStartup;
@@ -1815,6 +1833,11 @@ namespace LightFixer
             menu.MenuItems.Add(miAuto);
             menu.MenuItems.Add("-");
 
+            MenuItem miLog = new MenuItem(L("Открыть журнал работы", "Open the journal"));
+            miLog.Click += delegate { OpenLog(); };
+            menu.MenuItems.Add(miLog);
+            menu.MenuItems.Add("-");
+
             MenuItem miAbout = new MenuItem(L("О программе", "About"));
             miAbout.Click += delegate { ShowAbout(); };
             menu.MenuItems.Add(miAbout);
@@ -1859,8 +1882,21 @@ namespace LightFixer
 
         private static void OpenLog()
         {
+            if (S == null || !S.LogEnabled)
+            {
+                MessageBox.Show(L("Журнал выключен. Включите галочку «Вести журнал работы программы» в окне настроек.",
+                                  "The journal is switched off. Tick \"Keep a journal of the program's work\" in the settings window."),
+                                "LightFixer BRI-721", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LightFixer", "lightfixer.log");
-            try { if (File.Exists(log)) Process.Start("notepad.exe", "\"" + log + "\""); } catch { }
+            try
+            {
+                if (File.Exists(log)) Process.Start("notepad.exe", "\"" + log + "\"");
+                else MessageBox.Show(L("Журнал пока пуст: записей ещё не было.", "The journal is still empty: nothing has happened yet."),
+                                     "LightFixer BRI-721", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch { }
         }
 
         private static void UpdateUi()
@@ -1916,7 +1952,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v2.0.1";
+            form.Text = "LightFixer BRI-721  v2.1";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1935,7 +1971,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v2.0.1";
+            title.Text = "LightFixer BRI-721   v2.1";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -1953,7 +1989,7 @@ namespace LightFixer
             lnkAbout.Text = L("О программе", "About");
             lnkAbout.TextAlign = ContentAlignment.MiddleRight;
             lnkAbout.LinkColor = CLink;
-            lnkAbout.SetBounds(352, 792, 88, 22);
+            lnkAbout.SetBounds(352, 800, 88, 22);
             lnkAbout.LinkClicked += delegate { ShowAbout(); };
             form.Controls.Add(lnkAbout);
 
@@ -2174,7 +2210,7 @@ namespace LightFixer
 
             // ---- support: a visible button, but nothing is sold and nothing is unlocked
             cardSupport = new CardPanel();
-            cardSupport.SetBounds(20, 648, 420, 80);
+            cardSupport.SetBounds(20, 640, 420, 52);
             cardSupport.Dim = true;
             form.Controls.Add(cardSupport);
 
@@ -2186,7 +2222,7 @@ namespace LightFixer
             btnDonate.PressFill = Color.FromArgb(0xD8, 0xDC, 0xFF);
             btnDonate.Border = Color.FromArgb(0xB9, 0xBF, 0xF5);
             btnDonate.TextColor = CLink;
-            btnDonate.SetBounds(110, 8, 200, 28);
+            btnDonate.SetBounds(14, 12, 196, 28);
             btnDonate.Click += delegate
             {
                 try { Process.Start(new ProcessStartInfo(DonateUrl) { UseShellExecute = true }); }
@@ -2195,13 +2231,34 @@ namespace LightFixer
             cardSupport.Controls.Add(btnDonate);
 
             Label lblSupport = new Label();
-            lblSupport.Text = L("Программа распространяется бесплатно.\r\nБлагодарность — по желанию, это не оплата.",
-                                "The program is free of charge.\r\nA thank-you is optional and is not a payment.");
+            lblSupport.Text = L("Программа бесплатна.\r\nБлагодарность — по желанию.",
+                                "The program is free.\r\nA thank-you is optional.");
             lblSupport.Font = new Font("Segoe UI", 8.25f);
             lblSupport.ForeColor = CHint;
-            lblSupport.TextAlign = ContentAlignment.MiddleCenter;
-            lblSupport.SetBounds(16, 40, 388, 34);
+            lblSupport.TextAlign = ContentAlignment.MiddleLeft;
+            lblSupport.SetBounds(222, 4, 190, 44);
             cardSupport.Controls.Add(lblSupport);
+
+            // ---- the journal, a section of its own: it is not a setting of the light,
+            // it is a switch for the file the program may write while it works
+            cardLog = new CardPanel();
+            cardLog.SetBounds(20, 700, 420, 48);
+            cardLog.Dim = true;
+            form.Controls.Add(cardLog);
+
+            cbLog = new CheckBox();
+            cbLog.Text = L("Вести журнал работы программы", "Keep a journal of the program's work");
+            cbLog.SetBounds(16, 6, 388, 20);
+            cardLog.Controls.Add(cbLog);
+
+            Label lblLogHint = new Label();
+            lblLogHint.Text = L("Только для разбора неполадок. По умолчанию выключен.",
+                                "Only for looking into troubles. Off by default.");
+            lblLogHint.Font = new Font("Segoe UI", 8.25f);
+            lblLogHint.ForeColor = CHint;
+            lblLogHint.TextAlign = ContentAlignment.MiddleLeft;
+            lblLogHint.SetBounds(38, 26, 366, 16);
+            cardLog.Controls.Add(lblLogHint);
 
             // ---- buttons: the destructive one far from the main one
             // the least important action is a plain link, not a button: it must not
@@ -2215,13 +2272,13 @@ namespace LightFixer
             btnQuit.LinkBehavior = LinkBehavior.HoverUnderline;
             btnQuit.TextAlign = ContentAlignment.MiddleCenter;
             btnQuit.AutoSize = false;
-            btnQuit.SetBounds(20, 736, 84, 36);
+            btnQuit.SetBounds(20, 756, 84, 36);
             form.Controls.Add(btnQuit);
 
             FlatButton btnTray = new FlatButton();
             btnTray.Text = L("Свернуть в значок в трее", "Minimize to tray");
             btnTray.BackColor = CBack;
-            btnTray.SetBounds(108, 736, 184, 36);
+            btnTray.SetBounds(108, 756, 184, 36);
             form.Controls.Add(btnTray);
 
             FlatButton btnSave = new FlatButton();
@@ -2232,13 +2289,13 @@ namespace LightFixer
             btnSave.PressFill = CAccentPress;
             btnSave.Border = Color.FromArgb(0, 0, 0, 0);
             btnSave.TextColor = Color.White;
-            btnSave.SetBounds(304, 736, 100, 36);
+            btnSave.SetBounds(304, 756, 100, 36);
             form.Controls.Add(btnSave);
 
             // ---- footer
             Panel sepFooter = new Panel();
             sepFooter.BackColor = CLine;
-            sepFooter.SetBounds(20, 780, 420, 1);
+            sepFooter.SetBounds(20, 796, 420, 1);
             form.Controls.Add(sepFooter);
 
             Label lblCopyright = new Label();
@@ -2246,7 +2303,7 @@ namespace LightFixer
             lblCopyright.Font = new Font("Segoe UI", 8f);
             lblCopyright.ForeColor = CFooter;
             lblCopyright.TextAlign = ContentAlignment.MiddleLeft;
-            lblCopyright.SetBounds(20, 792, 168, 22);
+            lblCopyright.SetBounds(20, 800, 168, 22);
             form.Controls.Add(lblCopyright);
 
             LinkLabel lnk4pda = new LinkLabel();
@@ -2254,7 +2311,7 @@ namespace LightFixer
             lnk4pda.Font = new Font("Segoe UI", 8f);
             lnk4pda.LinkColor = CFooter;
             lnk4pda.TextAlign = ContentAlignment.MiddleLeft;
-            lnk4pda.SetBounds(196, 796, 140, 22);
+            lnk4pda.SetBounds(196, 802, 140, 22);
             lnk4pda.LinkClicked += delegate
             {
                 try { Process.Start(new ProcessStartInfo("https://4pda.to/forum/index.php?showuser=1727220") { UseShellExecute = true }); }
@@ -2416,6 +2473,7 @@ namespace LightFixer
             cbAutostart.Checked = TaskEnabled();
             cbBoot.Checked = S.BootLight;
             cbCaps.Checked = S.CapsSwitch;
+            cbLog.Checked = S.LogEnabled;
 
             int idx = Array.IndexOf(IdleValues, S.IdleSeconds);
             if (idx < 0) idx = IdleValues.Length - 1;   // not in the list - show it as "your own value"
@@ -2433,7 +2491,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v2.0.1";
+            if (form != null) form.Text = "LightFixer BRI-721  v2.1";
         }
 
         // ---------- unsaved changes ----------
@@ -2526,6 +2584,7 @@ namespace LightFixer
                 S.MouseWake = cbMouse.Checked;
                 S.BootLight = cbBoot.Checked;
                 S.CapsSwitch = cbCaps.Checked;
+                S.LogEnabled = cbLog.Checked;
                 if (rbOff.Checked) S.Startup = "off";
                 else if (rbLast.Checked) S.Startup = "last";
                 else if (rbOn.Checked) S.Startup = (segLevel.SelectedIndex == 1) ? "high" : "low";
@@ -2550,7 +2609,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v2.0.1";
+                if (form != null) form.Text = "LightFixer BRI-721  v2.1";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2707,7 +2766,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 2.0.1", "version 2.0.1");
+                pill.Text = L("версия 2.1", "version 2.1");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;

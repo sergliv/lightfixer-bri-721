@@ -1,8 +1,14 @@
-﻿# LightFixer BRI-721  —  version 2.0.1
+﻿# LightFixer BRI-721  —  version 2.1
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
-**New in 2.0.1.** The program is now safe on other HONOR models. If the notebook's
+**New in 2.1.** The journal can now be switched on and off: a card of its own at the
+bottom of the window, "Keep a journal of the program's work", unticked by default.
+While it is unticked the program writes nothing to disk — neither the journal nor the
+boot file. The journal is only there to look into troubles: it holds times, light
+modes and error messages, but nothing you type.
+
+**Was new in 2.0.1.** The program is now safe on other HONOR models. If the notebook's
 firmware cannot report a press (or reports other numbers), the program notices it and
 works the old way — by reading the light, exactly as version 1.2.6 did. The rare
 check (once every 30 seconds) only starts after at least one press has really come
@@ -93,9 +99,12 @@ They are visible in Task Scheduler (Win+R → `taskschd.msc`), but there is no n
 to touch them there: the program keeps them in line with the ticks itself.
 
 Settings are stored in `settings.json` next to the executable, so that folder must be
-writable. The diagnostic log is at `%LOCALAPPDATA%\LightFixer\lightfixer.log` and can
-be opened from the tray menu. If you move the `.exe` elsewhere, the autostart task is
-updated on the next launch.
+writable. The journal is kept only when the box "Keep a journal of the program's work"
+is ticked in its own card at the bottom of the window — it is unticked by default, and
+then the program writes nothing to disk at all. A journal that is switched on lives at
+`%LOCALAPPDATA%\LightFixer\lightfixer.log`, opens from the tray menu and is capped at
+256 KB (the oldest lines go by themselves). If you move the `.exe` elsewhere, the
+autostart task is updated on the next launch.
 
 In "HONOR's own settings" mode the program sends no backlight commands: it does not
 set the brightness and does not change the BIOS timeout. It only reads the current
