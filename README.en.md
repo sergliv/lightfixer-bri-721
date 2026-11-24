@@ -1,8 +1,14 @@
-﻿# LightFixer BRI-721  —  version 2.0
+﻿# LightFixer BRI-721  —  version 2.0.1
 
 Keyboard backlight helper for the **HONOR X16 Plus 2024 (BRI-721)** notebook on Windows 11.
 
-**New in 2.0.** The main change: a press of Fn+Space is now reported to the program
+**New in 2.0.1.** The program is now safe on other HONOR models. If the notebook's
+firmware cannot report a press (or reports other numbers), the program notices it and
+works the old way — by reading the light, exactly as version 1.2.6 did. The rare
+check (once every 30 seconds) only starts after at least one press has really come
+from the laptop.
+
+**Was new in 2.0.** The main change: a press of Fn+Space is now reported to the program
 by the laptop itself. The controller tells Windows which step was pressed, and the
 program hears it at once — within milliseconds, not "the next time it looks". The
 two-to-three-second delay after idling is gone, and the constant asking of the
