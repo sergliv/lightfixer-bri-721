@@ -247,6 +247,11 @@ namespace LightFixer
         private static uint capsPid;
         private static volatile bool capsPending;
         private static int capsStage;                // 0 - asked the window, 1 - broadcast
+        // every press gets a number: a check that belongs to an older press is dropped.
+        // Without this a quick second press looked like "the first one failed", the
+        // program asked again and the layout jumped back - the key felt sluggish.
+        private static int capsGen;
+        private static int capsPendingGen;
 
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
@@ -439,6 +444,7 @@ namespace LightFixer
                                     if (GetKeyState(VkCapital) != 0) ClearRealCapsLock();
                                     lastKeyTick = unchecked((uint)Environment.TickCount);
                                     System.Threading.Interlocked.Increment(ref capsSeen);
+                                    System.Threading.Interlocked.Increment(ref capsGen);
                                     try { wakeEvent.Set(); } catch { }
                                     try { SwitchLayout(); } catch { }
                                 }
@@ -540,6 +546,7 @@ namespace LightFixer
             capsPid = pid;
             capsAskedTick = Environment.TickCount;
             capsStage = 0;
+            capsPendingGen = capsGen;
             capsPending = true;
 
             if (hwnd != IntPtr.Zero) PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
@@ -551,7 +558,12 @@ namespace LightFixer
         private static void CheckCapsResult()
         {
             if (!capsPending) return;
-            if (unchecked(Environment.TickCount - capsAskedTick) < 300) return;
+            // the window answers in milliseconds; 120 is already generous. A longer
+            // wait made the fallback feel like a lag of a third of a second.
+            if (unchecked(Environment.TickCount - capsAskedTick) < (capsStage == 0 ? 120 : 300)) return;
+            // a newer press has already been handled: this check belongs to the old one,
+            // and asking again would undo what the hand just did
+            if (capsGen != capsPendingGen) { capsPending = false; return; }
             int nextLang = ((int)capsNext) & 0xFFFF;
 
             if (capsTid == 0)
