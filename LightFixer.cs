@@ -291,10 +291,25 @@ namespace LightFixer
         // program asked again and the layout jumped back - the key felt sluggish.
         private static int capsGen;
         private static int capsPendingGen;
-        // until this moment the engine loop stays quick, so the switch is checked at once
-        private static int capsWatchUntil;
+        // the whole caps* set is written by the hook thread and by the engine loop: one
+        // lock over the set keeps a fresh press from being mixed with the answer to the
+        // previous one (that looked like a key that switches the layout "sometimes")
+        private static readonly object capsLock = new object();
+        // until this moment the engine loop stays quick, so the switch is checked at once.
+        // It must start at "now", not at zero: TickCount is negative for the second half
+        // of its 49-day cycle, and zero then made the loop quick forever.
+        private static volatile int capsWatchUntil = unchecked((int)Environment.TickCount);
+        // a held Caps Lock sends a down every 33 ms without an up in between; only the
+        // first one is a press, otherwise the layout would run through every language
+        private static bool capsHeld;
+        private static uint capsHeldTick;
         // when the firmware mode was last read: in a long silence every second read is skipped
         private static DateTime lastNotice = DateTime.MinValue;
+
+        // the window sets this while it copies its boxes into the settings object: the
+        // engine must not reload the file from disk in that moment, or it writes the
+        // old values back over the ones the user has just chosen
+        private static volatile bool savingSettings;
 
         // ---- Fn+Space, told by the laptop itself ----
         // The same ACPI device the program commands also reports every Fn+Space press as
@@ -302,10 +317,13 @@ namespace LightFixer
         // pressed, so there is nothing to guess from the light and no need to read the
         // firmware ten times a second. The old reading stays below as a safety net.
         private static volatile bool evOk;          // the channel is open and trusted
-        private static volatile int evForce;        // the step from the last event
-        private static volatile uint evTick;        // TickCount when it arrived, for the journal
+        // the three numbers below are always read and written together, under evLock:
+        // reading the step apart from its counter let one press be taken twice
+        private static int evForce;                 // the step from the last event
+        private static uint evTick;                 // TickCount when it arrived, for the journal
         private static int evCount;                 // events from the watcher thread
         private static int evHandled;               // events already used by the loop
+        private static readonly object evLock = new object();
         private static ManagementEventWatcher evWatch;
         private static DateTime evLastTry = DateTime.MinValue;
         private static DateTime evLastFailLog = DateTime.MinValue;
@@ -324,6 +342,8 @@ namespace LightFixer
 
         public static bool LightIsOn { get { return stateOn; } }
         public static int CurrentMode { get { return expected; } }
+        // the window tells the engine that it is copying its boxes into the settings
+        public static bool SavingSettings { get { return savingSettings; } set { savingSettings = value; } }
 
         public static void Start(Settings settings)
         {
@@ -413,11 +433,15 @@ namespace LightFixer
         private static bool StartEventWatch()
         {
             if (evOk) return true;
+            // a watcher left behind from an earlier attempt would keep reporting as well,
+            // and every press would then be heard twice
+            StopEventWatch();
+            ManagementEventWatcher w = null;
             try
             {
                 ManagementScope scope = new ManagementScope(@"root\wmi");
                 scope.Connect();
-                ManagementEventWatcher w = new ManagementEventWatcher(scope, new WqlEventQuery("SELECT * FROM OemWMIEvent"));
+                w = new ManagementEventWatcher(scope, new WqlEventQuery("SELECT * FROM OemWMIEvent"));
                 w.EventArrived += new EventArrivedEventHandler(OnFirmwareEvent);
                 w.Start();
                 evWatch = w;
@@ -427,6 +451,13 @@ namespace LightFixer
             }
             catch (Exception ex)
             {
+                // a half-started watcher is stopped and freed here, otherwise every
+                // retry (once a minute after a failure) would leave one more behind
+                if (w != null)
+                {
+                    try { w.Stop(); } catch { }
+                    try { w.Dispose(); } catch { }
+                }
                 evOk = false;
                 // the channel is retried now and then, so a failure is written down
                 // rarely: otherwise a laptop that never reports would fill the journal
@@ -437,6 +468,14 @@ namespace LightFixer
                 }
                 return false;
             }
+        }
+
+        // events that came while the program was not acting on them (switched off by the
+        // user, or the diagnostic "observe" mode) are dropped, not used later as if the
+        // key had been pressed at that moment
+        private static void DropPendingEvents()
+        {
+            lock (evLock) { evHandled = evCount; }
         }
 
         private static void StopEventWatch()
@@ -467,9 +506,12 @@ namespace LightFixer
                     case EvAuto: m = ModeAuto; break;
                     default: return;          // not a light step
                 }
-                evForce = m;
-                evTick = unchecked((uint)Environment.TickCount);
-                Interlocked.Increment(ref evCount);
+                lock (evLock)
+                {
+                    evForce = m;
+                    evTick = unchecked((uint)Environment.TickCount);
+                    evCount++;
+                }
                 try { wakeEvent.Set(); } catch { }
             }
             catch { }
@@ -478,12 +520,18 @@ namespace LightFixer
         // A press the laptop reported. Nothing here is guessed: the step is known.
         private static void HandleFirmwareEvent(DateTime now)
         {
-            int c = Volatile.Read(ref evCount);
-            if (c == evHandled) return;
-            int m = evForce;
-            int delay = unchecked((int)((uint)Environment.TickCount - evTick));
-            string note = ", reported by the laptop, handled in " + delay + " ms";
-            evHandled = c;
+            int m;
+            string note;
+            // the step and its counter are taken together: reading them one after the
+            // other let a press that arrived in between be taken for the previous one
+            lock (evLock)
+            {
+                if (evCount == evHandled) return;
+                m = evForce;
+                int delay = unchecked((int)((uint)Environment.TickCount - evTick));
+                note = ", reported by the laptop, handled in " + delay + " ms";
+                evHandled = evCount;
+            }
             if (S == null) return;
             if (!S.Enabled) return;
             if (S.Control != "ours") return;   // "Штатные настройки HONOR": hands off
@@ -582,42 +630,61 @@ namespace LightFixer
             {
                 keyProc = delegate(int nCode, IntPtr wParam, IntPtr lParam)
                 {
-                    if (nCode >= 0)
+                    // anything thrown here would end the whole process: the hook lives on
+                    // its own thread and nobody above it would catch the exception
+                    try
                     {
-                        bool down = (wParam == (IntPtr)0x100 || wParam == (IntPtr)0x104);
-                        bool up = (wParam == (IntPtr)0x101 || wParam == (IntPtr)0x105);
-
-                        // Caps Lock as the layout switch: the key never reaches Windows,
-                        // so the lock never engages and the Caps Lock light stays dark.
-                        // Both press and release must be swallowed, otherwise the lock
-                        // would be toggled on the release.
-                        if ((down || up) && (S != null) && S.CapsSwitch)
+                        if (nCode >= 0)
                         {
-                            KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-                            if (k.vkCode == VkCapital && k.dwExtraInfo != (IntPtr)CapsTag)
+                            bool down = (wParam == (IntPtr)0x100 || wParam == (IntPtr)0x104);
+                            bool up = (wParam == (IntPtr)0x101 || wParam == (IntPtr)0x105);
+
+                            // Caps Lock as the layout switch: the key never reaches Windows,
+                            // so the lock never engages and the Caps Lock light stays dark.
+                            // Both press and release must be swallowed, otherwise the lock
+                            // would be toggled on the release.
+                            if ((down || up) && (S != null) && S.CapsSwitch)
                             {
-                                if (down)
+                                KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                                if (k.vkCode == VkCapital && k.dwExtraInfo != (IntPtr)CapsTag)
                                 {
-                                    // a lock left on from before the hook went up would
-                                    // otherwise stay on forever: the key never reaches Windows
-                                    if (GetKeyState(VkCapital) != 0) ClearRealCapsLock();
-                                    lastKeyTick = unchecked((uint)Environment.TickCount);
-                                    System.Threading.Interlocked.Increment(ref capsSeen);
-                                    System.Threading.Interlocked.Increment(ref capsGen);
-                                    try { wakeEvent.Set(); } catch { }
-                                    try { SwitchLayout(); } catch { }
+                                    uint tick = unchecked((uint)Environment.TickCount);
+                                    if (down)
+                                    {
+                                        // A held key repeats a down every 33 ms and sends no up
+                                        // in between: that is one press, not twenty, otherwise
+                                        // the layout would run through every language at once.
+                                        // The three seconds let the key work again if the up was
+                                        // lost while the hook was being re-installed.
+                                        if (capsHeld && unchecked(tick - capsHeldTick) < 3000) return (IntPtr)1;
+                                        capsHeld = true;
+                                        capsHeldTick = tick;
+                                        // a lock left on from before the hook went up would
+                                        // otherwise stay on forever: the key never reaches Windows
+                                        if (GetKeyState(VkCapital) != 0) ClearRealCapsLock();
+                                        lastKeyTick = tick;
+                                        System.Threading.Interlocked.Increment(ref capsSeen);
+                                        System.Threading.Interlocked.Increment(ref capsGen);
+                                        try { wakeEvent.Set(); } catch { }
+                                        try { SwitchLayout(); } catch { }
+                                    }
+                                    else
+                                    {
+                                        capsHeld = false;
+                                    }
+                                    return (IntPtr)1;
                                 }
-                                return (IntPtr)1;
+                            }
+
+                            if (down)
+                            {
+                                lastKeyTick = unchecked((uint)Environment.TickCount);
+                                // cut a long sleep short: the light must come back at once
+                                try { wakeEvent.Set(); } catch { }
                             }
                         }
-
-                        if (down)
-                        {
-                            lastKeyTick = unchecked((uint)Environment.TickCount);
-                            // cut a long sleep short: the light must come back at once
-                            try { wakeEvent.Set(); } catch { }
-                        }
                     }
+                    catch { }
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
                 };
                 IntPtr hk = SetWindowsHookEx(13, keyProc, IntPtr.Zero, 0);
@@ -649,7 +716,11 @@ namespace LightFixer
                         }
                         else
                         {
-                            hookFailed = (hk == IntPtr.Zero);
+                            // Windows drops a hook without saying so, and the handle we
+                            // still hold then points at nothing: after a failed re-install
+                            // the hook must be treated as gone, not as working, otherwise
+                            // the light keeps going out while somebody is typing
+                            hookFailed = true;
                             Log("WARN: keyboard hook re-install failed, err=" + Marshal.GetLastWin32Error());
                         }
                         continue;
@@ -699,75 +770,86 @@ namespace LightFixer
             // remembered for the check the engine loop makes a moment later. Only numbers
             // are stored here: the window is looked up once, and its process name is
             // resolved by the loop - the hook must stay fast or Windows drops it.
-            capsTid = tid;
-            capsFrom = curLang;
-            capsNext = next;
-            capsPid = pid;
-            capsAskedTick = Environment.TickCount;
-            capsWatchUntil = Environment.TickCount + 1200;
-            capsPendingGen = capsGen;
-            capsPending = true;
-
-            // the desktop, the taskbar and the like have no text field and never take a
+            // The whole set is written under capsLock, so the loop can never mix a new
+            // press with the answer to the previous one.
+            // The desktop, the taskbar and the like have no text field and never take a
             // per-window request: for them the system-wide switch is the only way, and it
-            // is used at once - waiting for a refusal first is what felt sluggish
-            if (NeedsSystemSwitch(hwnd))
+            // is used at once - waiting for a refusal first is what felt sluggish.
+            bool system = NeedsSystemSwitch(hwnd);
+            lock (capsLock)
             {
-                capsStage = 1;
-                PostMessage((IntPtr)0xFFFF, WmInputLangChangeRequest, IntPtr.Zero, next);
-                return;
+                capsTid = tid;
+                capsFrom = curLang;
+                capsNext = next;
+                capsPid = pid;
+                capsAskedTick = Environment.TickCount;
+                capsWatchUntil = Environment.TickCount + 1200;
+                capsPendingGen = capsGen;
+                capsPending = true;
+                capsStage = system ? 1 : 0;
             }
 
-            capsStage = 0;
-            PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
+            if (system) PostMessage((IntPtr)0xFFFF, WmInputLangChangeRequest, IntPtr.Zero, next);
+            else PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
         }
 
         // did the layout of that window really move? Windows says nothing about a
         // refused request, and a key that quietly does nothing looks like a dead key.
         private static void CheckCapsResult()
         {
-            if (!capsPending) return;
-            // the window answers in milliseconds; 120 is already generous. A longer
-            // wait made the fallback feel like a lag of a third of a second.
-            if (unchecked(Environment.TickCount - capsAskedTick) < (capsStage == 0 ? 120 : 300)) return;
-            // a newer press has already been handled: this check belongs to the old one,
-            // and asking again would undo what the hand just did
-            if (capsGen != capsPendingGen) { capsPending = false; return; }
-            int nextLang = ((int)capsNext) & 0xFFFF;
-
-            if (capsTid == 0)
+            int nextLang, fromLang = 0, seen;
+            uint pid;
+            string verdict;
+            // The whole decision is made under capsLock: the hook may be writing a new
+            // press at this very moment, and mixing the two is what made the key switch
+            // "sometimes". The program name is looked up after the lock is released - it
+            // is the slow part and has nothing to do with the press itself.
+            lock (capsLock)
             {
-                // no window had the focus: the switch went to our own process instead,
-                // and the window's layout says nothing about whether it worked
-                capsPending = false;
-                Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
-                    nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + ": no foreground window at the time");
-                return;
-            }
+                if (!capsPending) return;
+                // the window answers in milliseconds; 120 is already generous. A longer
+                // wait made the fallback feel like a lag of a third of a second.
+                if (unchecked(Environment.TickCount - capsAskedTick) < (capsStage == 0 ? 120 : 300)) return;
+                // a newer press has already been handled: this check belongs to the old one,
+                // and asking again would undo what the hand just did
+                if (capsGen != capsPendingGen) { capsPending = false; return; }
+                nextLang = ((int)capsNext) & 0xFFFF;
+                fromLang = capsFrom;
+                pid = capsPid;
+                seen = capsSeen;
 
-            if ((((int)GetKeyboardLayout(capsTid)) & 0xFFFF) == nextLang)
-            {
-                capsPending = false;
-                Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
-                    nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + ": changed");
-                return;
+                if (capsTid == 0)
+                {
+                    // no window had the focus: the switch went to our own process instead,
+                    // and the window's layout says nothing about whether it worked
+                    capsPending = false;
+                    verdict = "no foreground window at the time";
+                }
+                else if ((((int)GetKeyboardLayout(capsTid)) & 0xFFFF) == nextLang)
+                {
+                    capsPending = false;
+                    verdict = "changed";
+                }
+                else if (capsStage == 0)
+                {
+                    // Explorer and a few other windows take the request and do nothing
+                    // with it. Second attempt: the same message to every top-level window
+                    // at once - this is how the system switches the layout when no window
+                    // owns it.
+                    capsStage = 1;
+                    PostMessage((IntPtr)0xFFFF, WmInputLangChangeRequest, IntPtr.Zero, capsNext);
+                    capsAskedTick = Environment.TickCount;
+                    return;
+                }
+                else
+                {
+                    capsPending = false;
+                    int now = ((int)GetKeyboardLayout(capsTid)) & 0xFFFF;
+                    verdict = "NOT changed (now 0x" + now.ToString("X4") + ")";
+                }
             }
-
-            // Explorer and a few other windows take the request and do nothing with it.
-            // Second attempt: the same message to every top-level window at once - this
-            // is how the system switches the layout when no window owns it.
-            if (capsStage == 0)
-            {
-                capsStage = 1;
-                PostMessage((IntPtr)0xFFFF, WmInputLangChangeRequest, IntPtr.Zero, capsNext);
-                capsAskedTick = Environment.TickCount;
-                return;
-            }
-
-            capsPending = false;
-            int now = ((int)GetKeyboardLayout(capsTid)) & 0xFFFF;
-            Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
-                nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + ": NOT changed (now 0x" + now.ToString("X4") + ")");
+            Log("caps: seen " + seen + ", layout 0x" + fromLang.ToString("X4") + " -> 0x" +
+                nextLang.ToString("X4") + " in " + ProcessNameOf(pid) + ": " + verdict);
         }
 
         private static long IdleMs()
@@ -900,7 +982,10 @@ namespace LightFixer
             // so a change there proves nothing about the channel and is just taken.
             if (evOk && now > resumeGrace.AddSeconds(60))
             {
-                evOk = false;
+                // the watcher itself is closed, not only distrusted: it is opened again
+                // a minute later, and a watcher left running would report every press
+                // a second time
+                StopEventWatch();
                 Log("the light changed without an event: reading the light directly again");
             }
 
@@ -1002,7 +1087,7 @@ namespace LightFixer
                         lastTimeout = DateTime.MinValue;
                         lastMode = DateTime.MinValue;
                     }
-                    else if ((now - lastSettings).TotalSeconds >= (idleMs > 30000 ? 30 : 15))
+                    else if (!savingSettings && (now - lastSettings).TotalSeconds >= (idleMs > 30000 ? 30 : 15))
                     {
                         // Reading the settings file is a disk access, and it was done every
                         // three seconds even on a laptop left alone all night: that alone
@@ -1032,6 +1117,7 @@ namespace LightFixer
                             obsLast = om;
                             Log("obs " + now.ToString("HH:mm:ss.fff") + " mode=" + om + " idle=" + (IdleMs() / 1000) + "s");
                         }
+                        DropPendingEvents();   // only watching, nothing is acted on
                         Thread.Sleep(40);
                         continue;
                     }
@@ -1047,7 +1133,10 @@ namespace LightFixer
                     // With the event channel open this is the only thing the program still
                     // asks the firmware, so it is done rarely: the pause it puts to zero is
                     // a setting, not a watchdog, and nothing resets it in between.
-                    if ((now - lastTimeout).TotalSeconds >= (evOk ? 60 : 20))
+                    // while the program is switched off nothing of the firmware is touched:
+                    // putting its own pause to zero would be a change the user did not ask
+                    // for, and the light is off anyway
+                    if (S.Enabled && (now - lastTimeout).TotalSeconds >= (evOk ? 60 : 20))
                     {
                         lastTimeout = now;
                         // in HONOR mode we do not touch the BIOS at all
@@ -1075,6 +1164,7 @@ namespace LightFixer
                     {
                         if (stateOn) { SetMode(ModeOff); expected = ModeOff; stateOn = false; lastOffAt = now; }
                         if (lastLogState != "disabled") { Log("disabled by settings"); lastLogState = "disabled"; }
+                        DropPendingEvents();   // nothing is acted on while switched off
                         Thread.Sleep(1000);
                         continue;
                     }
@@ -1246,6 +1336,10 @@ namespace LightFixer
         private const string DonateUrl = "https://pay.cloudtips.ru/p/36cd28db";
 
         private static Settings S = new Settings();
+        // kept in a field on purpose: a live mutex held only by a local variable may be
+        // collected by the garbage collector while the program runs, and a second copy
+        // would then start and fight the first one for the light
+        private static Mutex singleInstance;
         private static Form form;
         private static NotifyIcon tray;
         private static Icon appIcon;
@@ -1431,7 +1525,7 @@ namespace LightFixer
             };
 
             bool created;
-            Mutex mtx = new Mutex(true, "LightFixer_SingleInstance", out created);
+            singleInstance = new Mutex(true, "LightFixer_SingleInstance", out created);
             if (!created)
             {
                 if (!hidden) MessageBox.Show(L("LightFixer BRI-721 уже запущен. Его значок — в трее, рядом с часами.", "LightFixer BRI-721 is already running. Its icon is in the tray, next to the clock."), "LightFixer BRI-721");
@@ -2383,6 +2477,10 @@ namespace LightFixer
         // saves exactly what is on screen; returns false if the file could not be written
         private static bool SaveSettings()
         {
+            // the engine reloads the settings file on its own thread; a reload landing
+            // between these lines and Save() would write the old values back, and the
+            // window would say "Saved" while the edit was lost
+            Engine.SavingSettings = true;
             try
             {
                 S.Control = (segMode.SelectedIndex == 1) ? "native" : "ours";
@@ -2453,6 +2551,10 @@ namespace LightFixer
             {
                 SetStatus(3, L("Не удалось сохранить: ", "Could not save: ") + ex.Message);
                 return false;
+            }
+            finally
+            {
+                Engine.SavingSettings = false;
             }
         }
 
@@ -3405,3 +3507,4 @@ namespace LightFixer
     }
 
 }
+

@@ -194,7 +194,7 @@ write to, for example `C:\Program Files\LightFixer\`. If it sits in a folder tha
 writable by everyone, replacing the executable gives code execution with
 administrator rights, and as SYSTEM at boot.
 
-**Battery.** Since 1.2.7 the firmware does not have to be asked at all: the
+**Battery.** Since 2.0 the firmware does not have to be asked at all: the
 controller itself tells Windows about every press of Fn+Space, and the program
 simply waits for that message. A rare safety net remains — one read of the light
 every 30 seconds, and one more right after the laptop wakes up. Measured: a press
@@ -238,4 +238,5 @@ model designation.
 LightFixer BRI-721 is an independent project. It is not affiliated with, endorsed,
 sponsored or supported by HONOR (including HONOR Device Co., Ltd.), and it is not an
 official HONOR product. The model name is used solely to describe compatibility.
+
 
