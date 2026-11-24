@@ -1002,13 +1002,14 @@ namespace LightFixer
                         lastTimeout = DateTime.MinValue;
                         lastMode = DateTime.MinValue;
                     }
-                    else if ((now - lastSettings).TotalSeconds >= (idleMs > 30000 ? 10 : 3))
+                    else if ((now - lastSettings).TotalSeconds >= (idleMs > 30000 ? 30 : 15))
                     {
                         // Reading the settings file is a disk access, and it was done every
                         // three seconds even on a laptop left alone all night: that alone
                         // cost more than the firmware question this version got rid of.
-                        // While somebody is at the keyboard it stays three seconds, so a
-                        // saved setting is applied at once; in a long silence ten is plenty.
+                        // A setting saved in the window does NOT wait for this read: the
+                        // program bumps the version and sees it on the very next pass. The
+                        // read is only for a file edited by hand from outside, hence rare.
                         lastSettings = now;
                         S.Load();
                     }
