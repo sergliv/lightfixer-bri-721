@@ -316,7 +316,11 @@ namespace LightFixer
         // a WMI event (root\wmi, OemWMIEvent). The event carries the step that was
         // pressed, so there is nothing to guess from the light and no need to read the
         // firmware ten times a second. The old reading stays below as a safety net.
-        private static volatile bool evOk;          // the channel is open and trusted
+        private static volatile bool evOk;          // the channel is open
+        // "open" is not yet "useful": another HONOR model may speak other numbers, and
+        // then the channel stays silent while the light does move. Only a real light step
+        // out of it proves it, and until then the light is read as often as in 1.2.6.
+        private static volatile bool evWorking;
         // the three numbers below are always read and written together, under evLock:
         // reading the step apart from its counter let one press be taken twice
         private static int evForce;                 // the step from the last event
@@ -441,6 +445,14 @@ namespace LightFixer
             {
                 ManagementScope scope = new ManagementScope(@"root\wmi");
                 scope.Connect();
+                // On a laptop whose firmware does not publish this class the watcher would
+                // sit there silently, and the program would look alive while never hearing
+                // a press. The class is asked for first: if it is absent, WMI is left alone
+                // and the light is read the old way - exactly the behaviour of 1.2.6.
+                using (ManagementClass mc = new ManagementClass(scope, new ManagementPath("OemWMIEvent"), null))
+                {
+                    mc.Get();   // throws when the class does not exist
+                }
                 w = new ManagementEventWatcher(scope, new WqlEventQuery("SELECT * FROM OemWMIEvent"));
                 w.EventArrived += new EventArrivedEventHandler(OnFirmwareEvent);
                 w.Start();
@@ -483,6 +495,7 @@ namespace LightFixer
             ManagementEventWatcher w = evWatch;
             evWatch = null;
             evOk = false;
+            evWorking = false;
             if (w == null) return;
             try { w.Stop(); } catch { }
             try { w.Dispose(); } catch { }
@@ -506,6 +519,8 @@ namespace LightFixer
                     case EvAuto: m = ModeAuto; break;
                     default: return;          // not a light step
                 }
+                // the channel has just shown that this laptop speaks its language
+                evWorking = true;
                 lock (evLock)
                 {
                     evForce = m;
@@ -1257,8 +1272,12 @@ namespace LightFixer
                     // With the event channel open the light is only read now and then, as a
                     // safety net: if it ever misses a press, the read sees it and the old
                     // frequent reading comes back by itself (see NoticeUserSwitch).
-                    bool everyPass = !evOk && ((idleMs <= 30000) || (now < startupGrace) || (now < resumeGrace));
-                    if (everyPass || (now - lastNotice).TotalSeconds >= (evOk ? 30 : 3))
+                    // Until the channel has really produced a light step, the old frequent
+                    // reading stays: on a laptop whose firmware speaks other numbers that
+                    // is the only thing that works, and it is exactly what 1.2.6 did.
+                    bool quiet = evOk && evWorking;
+                    bool everyPass = !quiet && ((idleMs <= 30000) || (now < startupGrace) || (now < resumeGrace));
+                    if (everyPass || (now - lastNotice).TotalSeconds >= (quiet ? 30 : 3))
                     {
                         lastNotice = now;
                         NoticeUserSwitch(now, idleMs);   // Fn+Space first, the idle rule after it
