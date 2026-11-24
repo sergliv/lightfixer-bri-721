@@ -166,6 +166,20 @@ namespace LightFixer
 
         [DllImport("user32.dll")] private static extern short GetKeyState(int vk);
         [DllImport("user32.dll")] private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int max);
+
+        // The desktop, the taskbar and other shell windows have no text field of their
+        // own: a per-window layout request just sits there, and only the system-wide
+        // switch works. Asking them the long way round was what felt sluggish.
+        private static bool NeedsSystemSwitch(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return true;
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+            GetClassName(hwnd, sb, 256);
+            string c = sb.ToString();
+            return c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd"
+                || c == "Shell_SecondaryTrayWnd" || c == "SHELLDLL_DefView";
+        }
 
         // The key is swallowed, so Windows itself can never turn the lock off. If the
         // lock is on (a press slipped in before the hook was up, or another program set
@@ -545,12 +559,21 @@ namespace LightFixer
             capsNext = next;
             capsPid = pid;
             capsAskedTick = Environment.TickCount;
-            capsStage = 0;
             capsPendingGen = capsGen;
             capsPending = true;
 
-            if (hwnd != IntPtr.Zero) PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
-            else ActivateKeyboardLayout(next, 0);
+            // the desktop, the taskbar and the like have no text field and never take a
+            // per-window request: for them the system-wide switch is the only way, and it
+            // is used at once - waiting for a refusal first is what felt sluggish
+            if (NeedsSystemSwitch(hwnd))
+            {
+                capsStage = 1;
+                PostMessage((IntPtr)0xFFFF, WmInputLangChangeRequest, IntPtr.Zero, next);
+                return;
+            }
+
+            capsStage = 0;
+            PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
         }
 
         // did the layout of that window really move? Windows says nothing about a
