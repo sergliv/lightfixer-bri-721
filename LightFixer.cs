@@ -34,8 +34,8 @@ using System.Windows.Forms;
 
 // the same number must stand in three places: here, in app.manifest and in the window;
 // bump them together
-[assembly: AssemblyVersion("1.2.4.0")]
-[assembly: AssemblyFileVersion("1.2.4.0")]
+[assembly: AssemblyVersion("1.2.5.0")]
+[assembly: AssemblyFileVersion("1.2.5.0")]
 [assembly: AssemblyProduct("LightFixer BRI-721")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 sergliv")]
 
@@ -152,13 +152,29 @@ namespace LightFixer
         [DllImport("user32.dll")] private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
 
         private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
-        [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+        // SetLastError is required: without it GetLastWin32Error after a failed install
+        // returns whatever was left there, and the journal would name a false reason
+        [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
 
         // ---- Caps Lock as the layout switch
         [StructLayout(LayoutKind.Sequential)]
         private struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
 
         private const int VkCapital = 0x14;
+        // mark of the presses the program makes itself to clear the real lock
+        private const uint CapsTag = 0x4C464952;   // "LFIR"
+
+        [DllImport("user32.dll")] private static extern short GetKeyState(int vk);
+        [DllImport("user32.dll")] private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+
+        // The key is swallowed, so Windows itself can never turn the lock off. If the
+        // lock is on (a press slipped in before the hook was up, or another program set
+        // it), the next press clears it as well as switching the layout.
+        private static void ClearRealCapsLock()
+        {
+            keybd_event(VkCapital, 0, 0, (UIntPtr)CapsTag);
+            keybd_event(VkCapital, 0, 2, (UIntPtr)CapsTag);
+        }
         private const uint WmInputLangChangeRequest = 0x0050;
 
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
@@ -223,13 +239,13 @@ namespace LightFixer
         // switch is done by another program's window, and it may ignore the request.
         // The ask is remembered here and checked a moment later by the engine loop, so
         // the journal shows whether the layout really moved or only the request went out.
-        private static int capsSeen;
+        private static int capsSeen;                 // written by the hook, read by the loop
         private static uint capsTid;
         private static int capsFrom;
         private static IntPtr capsNext = IntPtr.Zero;
-        private static DateTime capsAskedAt = DateTime.MinValue;
-        private static string capsFront = "";
-        private static bool capsPending;
+        private static int capsAskedTick;            // TickCount: a plain int, safe to share
+        private static uint capsPid;
+        private static volatile bool capsPending;
 
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
@@ -413,12 +429,15 @@ namespace LightFixer
                         if ((down || up) && (S != null) && S.CapsSwitch)
                         {
                             KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-                            if (k.vkCode == VkCapital)
+                            if (k.vkCode == VkCapital && k.dwExtraInfo != (IntPtr)CapsTag)
                             {
                                 if (down)
                                 {
+                                    // a lock left on from before the hook went up would
+                                    // otherwise stay on forever: the key never reaches Windows
+                                    if (GetKeyState(VkCapital) != 0) ClearRealCapsLock();
                                     lastKeyTick = unchecked((uint)Environment.TickCount);
-                                    capsSeen++;
+                                    System.Threading.Interlocked.Increment(ref capsSeen);
                                     try { wakeEvent.Set(); } catch { }
                                     try { SwitchLayout(); } catch { }
                                 }
@@ -452,10 +471,21 @@ namespace LightFixer
                 {
                     if (msg.message == 0x0113)
                     {
-                        try { UnhookWindowsHookEx(hk); } catch { }
-                        hk = SetWindowsHookEx(13, keyProc, IntPtr.Zero, 0);
-                        hookFailed = (hk == IntPtr.Zero);
-                        if (hookFailed) Log("WARN: keyboard hook re-install failed, err=" + Marshal.GetLastWin32Error());
+                        // the new hook goes in first and the old one is removed only after
+                        // it worked: unhooking first left a gap where a Caps Lock press
+                        // reached Windows and turned the real lock on
+                        IntPtr fresh = SetWindowsHookEx(13, keyProc, IntPtr.Zero, 0);
+                        if (fresh != IntPtr.Zero)
+                        {
+                            if (hk != IntPtr.Zero) { try { UnhookWindowsHookEx(hk); } catch { } }
+                            hk = fresh;
+                            hookFailed = false;
+                        }
+                        else
+                        {
+                            hookFailed = (hk == IntPtr.Zero);
+                            Log("WARN: keyboard hook re-install failed, err=" + Marshal.GetLastWin32Error());
+                        }
                         continue;
                     }
                     TranslateMessage(ref msg);
@@ -466,19 +496,12 @@ namespace LightFixer
             t.Start();
         }
 
-        // name of the program in front, for the journal only: "the key works everywhere
-        // but here" is answered by this word, and nothing else of that program is read
-        private static string ForegroundProcess()
+        // name of the program, for the journal only: "the key works everywhere but here"
+        // is answered by this word, and nothing else of that program is read
+        private static string ProcessNameOf(uint pid)
         {
-            try
-            {
-                IntPtr hwnd = GetForegroundWindow();
-                if (hwnd == IntPtr.Zero) return "none";
-                uint pid;
-                GetWindowThreadProcessId(hwnd, out pid);
-                if (pid == 0) return "?";
-                return System.Diagnostics.Process.GetProcessById((int)pid).ProcessName;
-            }
+            if (pid == 0) return "none";
+            try { return System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; }
             catch { return "?"; }
         }
 
@@ -488,7 +511,7 @@ namespace LightFixer
         private static void SwitchLayout()
         {
             IntPtr hwnd = GetForegroundWindow();
-            uint pid;
+            uint pid = 0;
             uint tid = (hwnd != IntPtr.Zero) ? GetWindowThreadProcessId(hwnd, out pid) : 0;
 
             int n = GetKeyboardLayoutList(0, null);
@@ -507,12 +530,14 @@ namespace LightFixer
             }
             IntPtr next = (idx >= 0) ? list[(idx + 1) % n] : list[0];
 
-            // remembered for the check the engine loop makes a moment later
+            // remembered for the check the engine loop makes a moment later. Only numbers
+            // are stored here: the window is looked up once, and its process name is
+            // resolved by the loop - the hook must stay fast or Windows drops it.
             capsTid = tid;
             capsFrom = curLang;
             capsNext = next;
-            capsFront = ForegroundProcess();
-            capsAskedAt = DateTime.Now;
+            capsPid = pid;
+            capsAskedTick = Environment.TickCount;
             capsPending = true;
 
             if (hwnd != IntPtr.Zero) PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
@@ -521,15 +546,26 @@ namespace LightFixer
 
         // did the layout of that window really move? Windows says nothing about a
         // refused request, and a key that quietly does nothing looks like a dead key.
-        private static void CheckCapsResult(DateTime now)
+        private static void CheckCapsResult()
         {
             if (!capsPending) return;
-            if ((now - capsAskedAt).TotalMilliseconds < 300) return;
+            if (unchecked(Environment.TickCount - capsAskedTick) < 300) return;
             capsPending = false;
-            int langNow = (capsTid != 0) ? (((int)GetKeyboardLayout(capsTid)) & 0xFFFF) : -1;
+            int nextLang = ((int)capsNext) & 0xFFFF;
+            string result;
+            if (capsTid == 0)
+            {
+                // no window had the focus: the switch went to our own process instead,
+                // and the window's layout says nothing about whether it worked
+                result = ": no foreground window at the time";
+            }
+            else
+            {
+                int langNow = ((int)GetKeyboardLayout(capsTid)) & 0xFFFF;
+                result = (langNow == nextLang) ? ": changed" : (": NOT changed (now 0x" + langNow.ToString("X4") + ")");
+            }
             Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
-                (((int)capsNext) & 0xFFFF).ToString("X4") + " in " + capsFront +
-                (langNow == (((int)capsNext) & 0xFFFF) ? ": changed" : ": NOT changed (now 0x" + langNow.ToString("X4") + ")"));
+                nextLang.ToString("X4") + " in " + ProcessNameOf(capsPid) + result);
         }
 
         private static long IdleMs()
@@ -690,10 +726,13 @@ namespace LightFixer
 
         private static void LoopBody()
         {
+            // the hook goes in before anything else: every moment without it is a moment
+            // when Caps Lock behaves as the real lock, and a press in that gap leaves the
+            // lock switched on for good
+            StartKeyboardHook();
             ApplyStartupChoice();
             seenVersion = S.Version;
             ResetFromSettings();
-            StartKeyboardHook();
             Log("LightFixer started; level=" + S.Level + " idle=" + S.IdleSeconds + "s control=" + S.Control + " mouseWake=" + S.MouseWake);
 
             DateTime deadline = DateTime.Now.AddSeconds(120);
@@ -726,7 +765,7 @@ namespace LightFixer
                     // Caps Lock: the journal says whether the key reached the program and
                     // whether the layout actually moved: "NOT changed" means the window in
                     // front refused the request and the key looks dead to the user.
-                    CheckCapsResult(now);
+                    CheckCapsResult();
 
                     if (S.Version != seenVersion)
                     {
@@ -1487,7 +1526,7 @@ namespace LightFixer
             // the window is rebuilt on every language change: the old tips would leak
             if (tipStartup != null) { tipStartup.Dispose(); tipStartup = null; }
             form = new Form();
-            form.Text = "LightFixer BRI-721  v1.2.4";
+            form.Text = "LightFixer BRI-721  v1.2.5";
             form.AutoScaleMode = AutoScaleMode.None;
             form.ClientSize = new Size(460, 828);
             form.StartPosition = FormStartPosition.CenterScreen;
@@ -1506,7 +1545,7 @@ namespace LightFixer
             form.Controls.Add(picLogo);
 
             Label title = new Label();
-            title.Text = "LightFixer BRI-721   v1.2.4";
+            title.Text = "LightFixer BRI-721   v1.2.5";
             title.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             title.ForeColor = CText;
             title.TextAlign = ContentAlignment.MiddleLeft;
@@ -2004,7 +2043,7 @@ namespace LightFixer
             dirty = false;
             SetStatus(0, L("Настройки сохранены. Клавиши Fn+Пробел работают как обычно.",
                               "Settings are saved. Fn+Space works as usual."));
-            if (form != null) form.Text = "LightFixer BRI-721  v1.2.4";
+            if (form != null) form.Text = "LightFixer BRI-721  v1.2.5";
         }
 
         // ---------- unsaved changes ----------
@@ -2117,7 +2156,7 @@ namespace LightFixer
                 }
 
                 dirty = false;
-                if (form != null) form.Text = "LightFixer BRI-721  v1.2.4";
+                if (form != null) form.Text = "LightFixer BRI-721  v1.2.5";
                 ApplyStartUpTicks();
                 string savedText = L("Сохранено. Уже действует.", "Saved. Now in effect.");
                 SetStatus(2, savedText);
@@ -2270,7 +2309,7 @@ namespace LightFixer
                             "Keyboard backlight control for HONOR BRI-721"), ContentAlignment.MiddleLeft);
 
                 Label pill = new Label();
-                pill.Text = L("версия 1.2.4", "version 1.2.4");
+                pill.Text = L("версия 1.2.5", "version 1.2.5");
                 pill.ForeColor = CLink;
                 pill.TextAlign = ContentAlignment.MiddleCenter;
                 pill.AutoSize = false;
