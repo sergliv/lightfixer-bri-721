@@ -168,6 +168,21 @@ namespace LightFixer
         [DllImport("user32.dll")] private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int max);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GUITHREADINFO
+        {
+            public int cbSize;
+            public uint flags;
+            public IntPtr hwndActive;
+            public IntPtr hwndFocus;
+            public IntPtr hwndCapture;
+            public IntPtr hwndMenuOwner;
+            public IntPtr hwndMoveSize;
+            public IntPtr hwndCaret;
+            public int rcLeft, rcTop, rcRight, rcBottom;
+        }
+        [DllImport("user32.dll")] private static extern bool GetGUIThreadInfo(uint idThread, ref GUITHREADINFO info);
+
         // The desktop, the taskbar and other shell windows have no text field of their
         // own: a per-window layout request just sits there, and only the system-wide
         // switch works. Asking them the long way round was what felt sluggish.
@@ -177,8 +192,18 @@ namespace LightFixer
             System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
             GetClassName(hwnd, sb, 256);
             string c = sb.ToString();
-            return c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd"
-                || c == "Shell_SecondaryTrayWnd" || c == "SHELLDLL_DefView";
+            if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd"
+                || c == "Shell_SecondaryTrayWnd" || c == "SHELLDLL_DefView") return true;
+
+            // no field is in focus either (a page background, an empty window): such a
+            // window answers the per-window request only after its own slow path
+            uint pid;
+            uint tid = GetWindowThreadProcessId(hwnd, out pid);
+            if (tid == 0) return true;
+            GUITHREADINFO g = new GUITHREADINFO();
+            g.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
+            if (GetGUIThreadInfo(tid, ref g)) return g.hwndFocus == IntPtr.Zero;
+            return false;
         }
 
         // The key is swallowed, so Windows itself can never turn the lock off. If the
@@ -266,6 +291,8 @@ namespace LightFixer
         // program asked again and the layout jumped back - the key felt sluggish.
         private static int capsGen;
         private static int capsPendingGen;
+        // until this moment the engine loop stays quick, so the switch is checked at once
+        private static int capsWatchUntil;
 
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
@@ -559,6 +586,7 @@ namespace LightFixer
             capsNext = next;
             capsPid = pid;
             capsAskedTick = Environment.TickCount;
+            capsWatchUntil = Environment.TickCount + 1200;
             capsPendingGen = capsGen;
             capsPending = true;
 
@@ -1013,6 +1041,10 @@ namespace LightFixer
                 if (S.Control != "ours" || !S.Enabled) nap = 1000;
                 else if (idleMs > 30000) nap = 1000;
                 else nap = 100;
+                // after a Caps Lock press the loop stays quick for a second: the result
+                // of the switch is checked here, and a one-second sleep would make the
+                // fallback come a whole second late - the key felt sluggish
+                if (unchecked(Environment.TickCount - capsWatchUntil) < 0) nap = 50;
 
                 bool woke = wakeEvent.WaitOne(nap, false);
                 if (woke) wakeEvent.Reset();
