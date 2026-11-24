@@ -168,6 +168,8 @@ namespace LightFixer
         [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] private static extern IntPtr ActivateKeyboardLayout(IntPtr hkl, uint flags);
         [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+        [DllImport("user32.dll")] private static extern IntPtr SetTimer(IntPtr hWnd, IntPtr nIDEvent, uint elapse, IntPtr timerProc);
         [DllImport("user32.dll")] private static extern bool GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
         [DllImport("user32.dll")] private static extern bool TranslateMessage(ref MSG lpMsg);
         [DllImport("user32.dll")] private static extern IntPtr DispatchMessage(ref MSG lpMsg);
@@ -217,6 +219,17 @@ namespace LightFixer
         private static volatile uint lastKeyTick = unchecked((uint)Environment.TickCount);
         private static volatile bool hookFailed;
         private static HookProc keyProc;
+        // Caps Lock can be swallowed by the hook and still change nothing: the layout
+        // switch is done by another program's window, and it may ignore the request.
+        // The ask is remembered here and checked a moment later by the engine loop, so
+        // the journal shows whether the layout really moved or only the request went out.
+        private static int capsSeen;
+        private static uint capsTid;
+        private static int capsFrom;
+        private static IntPtr capsNext = IntPtr.Zero;
+        private static DateTime capsAskedAt = DateTime.MinValue;
+        private static string capsFront = "";
+        private static bool capsPending;
 
         // While nobody is at the keyboard the loop sleeps for a whole second instead of
         // waking up eight times a second: every wake-up costs processor time, and on a
@@ -405,6 +418,7 @@ namespace LightFixer
                                 if (down)
                                 {
                                     lastKeyTick = unchecked((uint)Environment.TickCount);
+                                    capsSeen++;
                                     try { wakeEvent.Set(); } catch { }
                                     try { SwitchLayout(); } catch { }
                                 }
@@ -429,15 +443,43 @@ namespace LightFixer
                     Log("WARN: keyboard hook failed, err=" + Marshal.GetLastWin32Error());
                     hookFailed = true;
                 }
+                // Windows drops a low-level hook on its own when one callback takes too
+                // long, and it says nothing about it: the keys simply stop arriving.
+                // A fresh hook every five minutes brings it back without asking.
+                SetTimer(IntPtr.Zero, (IntPtr)7, 300000, IntPtr.Zero);
                 MSG msg;
                 while (GetMessage(out msg, IntPtr.Zero, 0, 0))
                 {
+                    if (msg.message == 0x0113)
+                    {
+                        try { UnhookWindowsHookEx(hk); } catch { }
+                        hk = SetWindowsHookEx(13, keyProc, IntPtr.Zero, 0);
+                        hookFailed = (hk == IntPtr.Zero);
+                        if (hookFailed) Log("WARN: keyboard hook re-install failed, err=" + Marshal.GetLastWin32Error());
+                        continue;
+                    }
                     TranslateMessage(ref msg);
                     DispatchMessage(ref msg);
                 }
             });
             t.IsBackground = true;
             t.Start();
+        }
+
+        // name of the program in front, for the journal only: "the key works everywhere
+        // but here" is answered by this word, and nothing else of that program is read
+        private static string ForegroundProcess()
+        {
+            try
+            {
+                IntPtr hwnd = GetForegroundWindow();
+                if (hwnd == IntPtr.Zero) return "none";
+                uint pid;
+                GetWindowThreadProcessId(hwnd, out pid);
+                if (pid == 0) return "?";
+                return System.Diagnostics.Process.GetProcessById((int)pid).ProcessName;
+            }
+            catch { return "?"; }
         }
 
         // Switches the keyboard layout of the window that has the focus. The message
@@ -465,8 +507,29 @@ namespace LightFixer
             }
             IntPtr next = (idx >= 0) ? list[(idx + 1) % n] : list[0];
 
+            // remembered for the check the engine loop makes a moment later
+            capsTid = tid;
+            capsFrom = curLang;
+            capsNext = next;
+            capsFront = ForegroundProcess();
+            capsAskedAt = DateTime.Now;
+            capsPending = true;
+
             if (hwnd != IntPtr.Zero) PostMessage(hwnd, WmInputLangChangeRequest, IntPtr.Zero, next);
             else ActivateKeyboardLayout(next, 0);
+        }
+
+        // did the layout of that window really move? Windows says nothing about a
+        // refused request, and a key that quietly does nothing looks like a dead key.
+        private static void CheckCapsResult(DateTime now)
+        {
+            if (!capsPending) return;
+            if ((now - capsAskedAt).TotalMilliseconds < 300) return;
+            capsPending = false;
+            int langNow = (capsTid != 0) ? (((int)GetKeyboardLayout(capsTid)) & 0xFFFF) : -1;
+            Log("caps: seen " + capsSeen + ", layout 0x" + capsFrom.ToString("X4") + " -> 0x" +
+                (((int)capsNext) & 0xFFFF).ToString("X4") + " in " + capsFront +
+                (langNow == (((int)capsNext) & 0xFFFF) ? ": changed" : ": NOT changed (now 0x" + langNow.ToString("X4") + ")"));
         }
 
         private static long IdleMs()
@@ -659,6 +722,11 @@ namespace LightFixer
                         resumeGrace = now.AddSeconds(8);
                     }
                     lastLoopTick = now;
+
+                    // Caps Lock: the journal says whether the key reached the program and
+                    // whether the layout actually moved: "NOT changed" means the window in
+                    // front refused the request and the key looks dead to the user.
+                    CheckCapsResult(now);
 
                     if (S.Version != seenVersion)
                     {
